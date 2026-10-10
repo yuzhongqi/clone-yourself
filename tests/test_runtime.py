@@ -9,7 +9,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from local_learning_runtime.core import RuntimeErrorBase, Store, canonical, digest, file_digest
-from local_learning_runtime.devices import android_capture, ios_capture, run_android_recipe
+from local_learning_runtime.devices import (android_capture, android_identity, android_launch, ios_capture,
+                                           run_android_recipe)
+from local_learning_runtime.knowledge import catalog, export_portal, import_graph
+from local_learning_runtime.acceptance import android_acceptance
 
 
 class RuntimeTests(unittest.TestCase):
@@ -286,6 +289,26 @@ class RuntimeTests(unittest.TestCase):
                 android_capture(self.store, "example/android", "test", "com.example.app", {}, False)
             command.assert_not_called()
 
+    def test_launcher_resolved_and_started_without_monkey(self):
+        with patch("local_learning_runtime.devices.run", side_effect=[
+                b"com.example.app/.MainActivity\n", b"Status: ok\n"]) as command:
+            android_launch(["adb", "-s", "test"], "com.example.app")
+        self.assertEqual(command.call_count, 2)
+        self.assertIn("resolve-activity", command.call_args_list[0].args[0])
+        self.assertIn("start", command.call_args_list[1].args[0])
+
+    def test_installed_apk_path_accepts_android_randomized_tilde(self):
+        with patch("local_learning_runtime.devices.run", side_effect=[
+                b"device\n", b"35\n", b"package:/data/app/~~random==/com.example.app/base.apk\n",
+                ("a" * 64 + "  /data/app/~~random==/com.example.app/base.apk\n").encode()]):
+            identity = android_identity(["adb", "-s", "test"], "com.example.app")
+        self.assertEqual(identity["os_api"], "35")
+
+    def test_launcher_cannot_resolve_another_package(self):
+        with patch("local_learning_runtime.devices.run", return_value=b"other.app/.Main\n"):
+            with self.assertRaisesRegex(RuntimeErrorBase, "resolve"):
+                android_launch(["adb", "-s", "test"], "com.example.app")
+
     def test_android_capture_records_installed_identity(self):
         xml = b'<hierarchy><node package="com.example.app" resource-id="home"/></hierarchy>'
         with patch("local_learning_runtime.devices.android_identity", return_value={
@@ -363,6 +386,65 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "PARTIAL")
         row, raw = self.store.evidence(report["report_evidence_id"])
         self.assertEqual(json.loads(raw)["restoration"], "FAIL")
+
+    def test_legacy_import_preserves_partial_without_publishing(self):
+        source = self.root / "graph.json"
+        source.write_text(json.dumps({"scope": "test", "nodes": [
+            {"id": "J05", "title": "Example journey", "status": "partial",
+             "summary": "Not completely verified"}]}))
+        first = import_graph(self.store, "example/android", source, ["J05"], True)
+        second = import_graph(self.store, "example/android", source, ["J05"], True)
+        self.assertEqual(first["ids"], second["ids"])
+        data = catalog(self.store, "example/android")
+        self.assertEqual(len(data["legacy"]), 1)
+        self.assertEqual(data["legacy"][0]["source_node"]["status"], "partial")
+        self.assertIsNone(data["revision"])
+        self.assertEqual(self.store.recall(self.task, "new")["status"], "NEEDS_INVESTIGATION")
+
+    def test_legacy_import_requires_approval(self):
+        with self.assertRaisesRegex(RuntimeErrorBase, "approval"):
+            import_graph(self.store, "example/android", self.root / "missing", ["J05"], False)
+
+    def test_portal_and_json_share_revision_and_escape_html(self):
+        self.spec["statement"] = '<script>alert("unsafe")</script>'
+        published = self.publish()
+        output = self.root / "portal"
+        result = export_portal(self.store, "example/android", output)
+        data = json.loads((output / "catalog.json").read_text())
+        page = (output / "index.html").read_text()
+        self.assertEqual(result["revision"], published["revision"])
+        self.assertEqual(data["revision"], published["revision"])
+        self.assertNotIn('<script>alert("unsafe")</script>', page)
+        self.assertIn("&lt;script&gt;", page)
+        self.assertIn("Content-Security-Policy", page)
+        self.assertIn(self.evidence_id, page)
+        with self.assertRaisesRegex(RuntimeErrorBase, "already exists"):
+            export_portal(self.store, "example/android", output)
+
+    def test_portal_marks_missing_evidence_blocked(self):
+        self.publish()
+        row, _ = self.store.evidence(self.evidence_id)
+        (self.store.blobs / row["sha256"]).unlink()
+        output = self.root / "portal"
+        export_portal(self.store, "example/android", output)
+        data = json.loads((output / "catalog.json").read_text())
+        self.assertEqual(data["claims"][0]["local_integrity"]["status"], "BLOCKED")
+
+    def test_catalog_does_not_label_published_candidate_unpublished(self):
+        self.publish()
+        self.assertEqual(catalog(self.store, "example/android")["candidates"], [])
+
+    def test_real_acceptance_requires_explicit_approval_before_device_calls(self):
+        with patch("local_learning_runtime.devices.run") as command:
+            with self.assertRaisesRegex(RuntimeErrorBase, "approval"):
+                android_acceptance(self.store, "example/android", "test", "com.example.app",
+                                   "com.example.app:id/home", {}, self.root / "out", False)
+            command.assert_not_called()
+
+    def test_real_acceptance_requires_app_owned_selector(self):
+        with self.assertRaisesRegex(RuntimeErrorBase, "owned"):
+            android_acceptance(self.store, "example/android", "test", "com.example.app",
+                               "another.app:id/home", {}, self.root / "out", True)
 
 
 if __name__ == "__main__":

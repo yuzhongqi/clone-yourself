@@ -12,6 +12,8 @@ from typing import Any, Optional, Sequence
 
 from .core import MAX_EVIDENCE_BYTES, RuntimeErrorBase, Store, file_digest, require, workspace_file
 from .devices import android_capture, ios_capture, run_android_recipe
+from .knowledge import catalog, export_portal, import_graph
+from .acceptance import android_acceptance
 
 
 def read_json(path: str) -> Any:
@@ -56,6 +58,24 @@ def parser() -> argparse.ArgumentParser:
     refresh = commands.add_parser("refresh")
     refresh.add_argument("--session", required=True)
     commands.add_parser("questions")
+    intake = commands.add_parser("import-graph")
+    intake.add_argument("source", type=Path)
+    intake.add_argument("--workspace", required=True)
+    intake.add_argument("--node", action="append", required=True)
+    intake.add_argument("--approve", action="store_true")
+    cards = commands.add_parser("catalog")
+    cards.add_argument("--workspace", required=True)
+    portal = commands.add_parser("export-portal")
+    portal.add_argument("--workspace", required=True)
+    portal.add_argument("--output", type=Path, required=True)
+    acceptance = commands.add_parser("acceptance-android")
+    acceptance.add_argument("--workspace", required=True)
+    acceptance.add_argument("--device", required=True)
+    acceptance.add_argument("--app", required=True)
+    acceptance.add_argument("--resource-id", required=True)
+    acceptance.add_argument("--context", required=True)
+    acceptance.add_argument("--output", type=Path, required=True)
+    acceptance.add_argument("--approve", action="store_true")
     invalidate = commands.add_parser("invalidate")
     invalidate.add_argument("claim")
     invalidate.add_argument("--reason", required=True)
@@ -108,6 +128,15 @@ def dispatch(store: Store, args: argparse.Namespace) -> Any:
         return store.refresh(args.session)
     if args.command == "questions":
         return store.questions()
+    if args.command == "import-graph":
+        return import_graph(store, args.workspace, args.source, args.node, args.approve)
+    if args.command == "catalog":
+        return catalog(store, args.workspace)
+    if args.command == "export-portal":
+        return export_portal(store, args.workspace, args.output)
+    if args.command == "acceptance-android":
+        return android_acceptance(store, args.workspace, args.device, args.app, args.resource_id,
+                                  read_json(args.context), args.output, args.approve)
     if args.command == "invalidate":
         return store.invalidate(args.claim, args.reason, args.lifecycle, args.expected_version,
                                 args.expected_revision, args.approve)

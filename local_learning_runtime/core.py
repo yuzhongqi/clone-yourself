@@ -164,6 +164,9 @@ class Store:
                 created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS device_locks (
                 device TEXT PRIMARY KEY, owner TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS legacy_intake (
+                id TEXT PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(id),
+                source_sha256 TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL);
         """)
 
     def close(self) -> None:

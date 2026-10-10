@@ -12,8 +12,8 @@ No model API, recurring job, private memo import, or account login is started.
 
 Solid connections below represent implemented local operations or explicit
 caller handoffs. Dashed connections represent planned integrations, not installed
-client hooks or automatic model calls. Device adapters are mock-tested; real app
-verification must be performed separately on authorized devices.
+client hooks or automatic model calls. Android has a narrow real-emulator
+acceptance result as well as mock tests; iOS is still mock-tested only.
 
 ```mermaid
 flowchart TD
@@ -45,8 +45,10 @@ flowchart TD
     DB --> Recall
     Evidence --> Recall
     Next["New session / task boundary"] --> Recall
-    DB -. planned .-> Portal["Read-only human knowledge portal"]
-    Legacy["Existing private memo / knowledge graph<br/>not included in this repository"] -. reviewed import planned .-> Candidate
+    DB --> Portal["Offline read-only HTML + JSON catalog"]
+    Legacy["Existing private memo / knowledge graph<br/>not included in this repository"] --> Intake["Approved selected-node import<br/>UNVERIFIED_LEGACY; original status retained"]
+    Intake --> Portal
+    Intake -. requires new evidence and explicit proposal .-> Candidate
 ```
 
 ### What is delivered and where knowledge lives
@@ -56,10 +58,10 @@ flowchart TD
 | Client interface | JSON CLI callable by humans and agents | No automatic VS Code/Codex/OpenClaw interception |
 | App observation | Android capture and bounded journey runner; iOS simulator capture | No real-device acceptance run yet; iOS navigation is not implemented |
 | Verification | Exact predicates, retained observation conditions, source/evidence fingerprints | Screenshots alone and model confidence cannot verify a claim |
-| Knowledge publication | Reviewed candidates, version checks, immutable SQLite snapshots, explicit invalidation | No automatic interpretation or promotion of legacy notes |
+| Knowledge publication | Reviewed candidates, version checks, immutable SQLite snapshots, explicit invalidation; unverified legacy intake | No automatic interpretation or promotion of legacy notes |
 | Cross-session use | Recall, refresh, dependency checks, deduplicated investigation queue | Callers supply current conditions; task completeness is not inferred |
 | Learning escalation | History-free, byte-bounded packet | No model gateway, spend enforcement or recurring scheduler |
-| Human access | This README, CLI JSON and local evidence | Rendered knowledge cards and a browser portal are planned |
+| Human access | Offline static HTML knowledge cards and matching JSON catalog | Export is a snapshot, not a live or hosted service |
 
 The GitHub repository delivers **generic software and synthetic tests**, not a
 project knowledge corpus. Persistent knowledge stays under `LLR_HOME` (default
@@ -72,8 +74,8 @@ private runtime home/
 ```
 
 Initialization creates this store; the demo does not populate it with real app
-knowledge. Existing private memo remains in its original store until explicitly
-reviewed and imported. Android and iOS retain independent workspace scopes.
+knowledge. Explicit graph import copies selected notes as unverified history
+without modifying the original memo. Android and iOS retain independent workspace scopes.
 
 ### Evidence-to-knowledge delivery workflow
 
@@ -415,8 +417,86 @@ alter the database, so these checks are not an adversarial sandbox.
   authentication. Model budget remains paused unless separately approved.
 - No semantic retrieval, complete dependency discovery, automatic source tracing,
   durable recipe catalog, MCP server, or VS Code extension.
-- No automatic import or modification of existing private memo stores.
+- No automatic promotion or modification of existing private memo stores.
 - No global guarantee that a server-hosted chat uses zero model calls; only this
   runtime's local operations make zero model requests.
-- App capture adapters are unit-tested with mocks; they must be validated on
-  authorized real devices before claiming a real app journey is verified.
+- Android launch, capture, restart assertions and cross-process knowledge reuse
+  have passed one authorized real emulator acceptance run. That narrow result
+  does not validate every Android feature, device, account, or iOS adapter.
+
+## Selected legacy knowledge intake
+
+```sh
+python3 -m local_learning_runtime import-graph /private/graph.json \
+  --workspace sample/android --node J05 --node F06 --approve
+python3 -m local_learning_runtime catalog --workspace sample/android
+```
+
+The input is a JSON object with a `nodes` list; nodes have unique IDs. At most
+16 selected nodes are copied per call, each at most 12000 UTF-8 bytes. Source
+fingerprint, scope, recorded source revision, original status, and full selected
+node body are retained. Repeated imports of the same selection/revision deduplicate.
+Import never creates an active claim or a passing verification; a historical
+`partial` or `observed` node stays `UNVERIFIED_LEGACY` in the new runtime.
+New runtime evidence, predicate checks, a scoped proposal, and approval are
+required for publication.
+
+## Human knowledge portal and agent catalog
+
+```sh
+python3 -m local_learning_runtime export-portal --workspace sample/android \
+  --output /private/portal/revision-1
+```
+
+Open the returned `index.html` locally in a browser. Its sibling `catalog.json`
+contains the same claims, revision, unverified legacy intake, unpublished
+candidates, and investigation queue for agent consumption. Published claims
+include local integrity status. Conditions remain recorded conditions, not an
+attestation of the current device. Referenced evidence is embedded in the page
+after fingerprint checking, with a 32 MiB total evidence cap.
+
+The portal is static, read-only, offline, escaped HTML with no scripts or remote
+assets. Choose a fresh output directory for each export; existing files are not
+overwritten. Re-export after publication or source/evidence drift. The HTML and
+JSON can contain private data: do not commit, host publicly, or upload them.
+Agent execution must still use `recall`; the catalog is not an execution permit.
+
+## Reproducible real Android acceptance
+
+```sh
+python3 -m local_learning_runtime acceptance-android \
+  --workspace sample/android --device SERIAL --app com.example.app \
+  --resource-id com.example.app:id/navigation \
+  --context /private/context.json --output /private/acceptance/run-1 --approve
+```
+
+First inspect the installed test app and choose one unique stable enabled UI
+node. This command intentionally launches and force-stops/relaunches that app,
+but does not tap buttons, send messages, log in, or change privacy settings.
+Use a dedicated approved emulator/account; relaunching a production app can
+still affect an in-progress user task.
+
+The command:
+
+1. Runs launch -> node assertion -> restart -> node assertion.
+2. Separately verifies the same non-mutated observable UI postcondition.
+   It does not restore unobserved draft or backend state.
+3. Stores real UI XML and the goal/restoration report with installed artifact identity.
+4. Publishes only the narrow declared UI observation after approval and checks.
+5. Starts an independent CLI process to recall that claim.
+6. Starts another process with a changed artifact and requires BLOCKED.
+7. Proposes a deliberately false predicate, requires rejection, and checks that
+   the published revision did not change.
+8. Exports the offline human portal and JSON catalog, plus `acceptance.json`.
+
+This is an actual device runner, not a mocked demo. The local output includes
+the recipe, journey, task, changed task, acceptance report and portal. Evidence
+remains in the private runtime store. A failed/partial journey stops publication
+and leaves its report for investigation. Claims do not assert source execution
+or authenticated account identity.
+
+An authorized API35 emulator acceptance on 2026-10-10 passed all eight steps.
+Real execution exposed two issues missed by mocks: `monkey` launch failed on
+that emulator, and randomized APK paths used `~~`. The adapter now resolves and
+starts the launcher via Activity Manager and permits valid randomized paths;
+both have regression tests. Private app details and evidence are not in this repo.

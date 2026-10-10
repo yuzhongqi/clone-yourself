@@ -29,7 +29,7 @@ def android_identity(prefix: List[str], package: str) -> Dict[str, str]:
     for line in paths:
         require(line.startswith("package:"), "Unexpected package path response")
         path = line[len("package:"):]
-        require(re.fullmatch(r"/[A-Za-z0-9_./+=@-]+\.apk", path) is not None,
+        require(re.fullmatch(r"/[A-Za-z0-9_./+=@~-]+\.apk", path) is not None,
                 "Unsupported package path")
         parts = run(prefix + ["shell", "sha256sum", path]).decode().split()
         require(bool(parts) and re.fullmatch(r"[0-9a-f]{64}", parts[0]) is not None,
@@ -51,6 +51,21 @@ def android_ui(prefix: List[str]) -> bytes:
         return raw
     finally:
         run(prefix + ["shell", "rm", "-f", remote])
+
+
+def android_launch(prefix: List[str], package: str) -> None:
+    resolved = run(prefix + ["shell", "cmd", "package", "resolve-activity", "--brief",
+                             "-a", "android.intent.action.MAIN",
+                             "-c", "android.intent.category.LAUNCHER", package]).decode().splitlines()
+    components = [line.strip() for line in resolved
+                  if re.fullmatch(re.escape(package) + r"/[A-Za-z0-9_.$]+", line.strip())]
+    require(len(components) == 1, "Cannot uniquely resolve requested app launcher")
+    response = run(prefix + ["shell", "am", "start", "-W",
+                             "-a", "android.intent.action.MAIN",
+                             "-c", "android.intent.category.LAUNCHER",
+                             "-n", components[0]]).decode()
+    require("Status: ok" in response and "Error:" not in response,
+            "Activity manager did not confirm successful app launch")
 
 
 def android_scope(store: Store, workspace: str, serial: str, package: str,
@@ -130,8 +145,7 @@ def run_android_recipe(store: Store, recipe: Dict[str, Any], approve: bool) -> D
             if action in ("launch", "restart"):
                 if action == "restart":
                     run(prefix + ["shell", "am", "force-stop", package])
-                run(prefix + ["shell", "monkey", "-p", package, "-c",
-                              "android.intent.category.LAUNCHER", "1"])
+                android_launch(prefix, package)
             elif action == "back":
                 run(prefix + ["shell", "input", "keyevent", "4"])
             else:
