@@ -8,6 +8,109 @@ and recalls applicable knowledge in later sessions.
 fact or that a plugin can intercept every VS Code/Codex/OpenClaw operation.**
 No model API, recurring job, private memo import, or account login is started.
 
+## Architecture overview
+
+Solid connections below represent implemented local operations or explicit
+caller handoffs. Dashed connections represent planned integrations, not installed
+client hooks or automatic model calls. Device adapters are mock-tested; real app
+verification must be performed separately on authorized devices.
+
+```mermaid
+flowchart TD
+    Human["Human: question, review, approval"] --> Task["Explicit task contract<br/>workspace + platform + conditions"]
+    Clients["VS Code / Codex / OpenClaw<br/>explicit CLI invocation, no installed hooks"] --> Task
+    Task --> Recall["Local runtime: deterministic recall"]
+    Recall --> Gate{"Conditions, anchors,<br/>evidence and dependencies valid?"}
+    Gate -->|Matching claims pass| Ready["LOCAL_READY<br/>JSON claims + conditions + revision"]
+    Ready --> Consumer["Human or agent consumes scoped knowledge"]
+    Gate -->|Stale or conflicted| Blocked["BLOCKED<br/>explain why reuse is unsafe"]
+    Gate -->|No match| Gap["NEEDS_INVESTIGATION<br/>deduplicated local question"]
+    Blocked --> Investigate["Explicit bounded investigation"]
+    Gap --> Investigate
+    Investigate --> Android["Android: approved journey runner<br/>UI assertions + restoration report"]
+    Investigate --> iOS["iOS simulator: screenshot capture<br/>no journey runner yet"]
+    Investigate --> Import["Explicit import<br/>trusted test JSON / UI XML / source anchors"]
+    Investigate --> Packet["Bounded learning packet<br/>no conversation history or model requests"]
+    Packet -. separately authorized, gateway planned .-> Model["Approved server model<br/>proposes scoped candidates"]
+    Model -. explicit submission .-> Candidate["Candidate claim"]
+    Android --> Evidence["Local content-addressed evidence"]
+    iOS --> Evidence
+    Import --> Evidence
+    Evidence --> Candidate
+    Candidate --> Verify["Registered local predicate checks<br/>JSON equality / unique UI node"]
+    Verify --> Review["Explicit human approval<br/>checks do not prove arbitrary prose"]
+    Human --> Review
+    Review --> Publish["Transactional publication<br/>expected revision + claim version"]
+    Publish --> DB["Private local SQLite<br/>claims + immutable snapshots + sessions"]
+    DB --> Recall
+    Evidence --> Recall
+    Next["New session / task boundary"] --> Recall
+    DB -. planned .-> Portal["Read-only human knowledge portal"]
+    Legacy["Existing private memo / knowledge graph<br/>not included in this repository"] -. reviewed import planned .-> Candidate
+```
+
+### What is delivered and where knowledge lives
+
+| Layer | Delivered now | Boundary |
+|---|---|---|
+| Client interface | JSON CLI callable by humans and agents | No automatic VS Code/Codex/OpenClaw interception |
+| App observation | Android capture and bounded journey runner; iOS simulator capture | No real-device acceptance run yet; iOS navigation is not implemented |
+| Verification | Exact predicates, retained observation conditions, source/evidence fingerprints | Screenshots alone and model confidence cannot verify a claim |
+| Knowledge publication | Reviewed candidates, version checks, immutable SQLite snapshots, explicit invalidation | No automatic interpretation or promotion of legacy notes |
+| Cross-session use | Recall, refresh, dependency checks, deduplicated investigation queue | Callers supply current conditions; task completeness is not inferred |
+| Learning escalation | History-free, byte-bounded packet | No model gateway, spend enforcement or recurring scheduler |
+| Human access | This README, CLI JSON and local evidence | Rendered knowledge cards and a browser portal are planned |
+
+The GitHub repository delivers **generic software and synthetic tests**, not a
+project knowledge corpus. Persistent knowledge stays under `LLR_HOME` (default
+`~/.local-learning-runtime`):
+
+```text
+private runtime home/
+  runtime.sqlite   # observations, candidates, claims, snapshots, sessions, questions
+  evidence/        # immutable content-addressed observation blobs
+```
+
+Initialization creates this store; the demo does not populate it with real app
+knowledge. Existing private memo remains in its original store until explicitly
+reviewed and imported. Android and iOS retain independent workspace scopes.
+
+### Evidence-to-knowledge delivery workflow
+
+```mermaid
+sequenceDiagram
+    actor Human
+    participant Agent as Human or agent CLI caller
+    participant Runtime as Local runtime
+    participant App as Authorized app / trusted test
+    participant Store as Private knowledge store
+    Human->>Agent: Define question, scope, permitted actions and expected result
+    Agent->>Runtime: recall(task, session)
+    Runtime->>Store: Read published revision; check evidence and dependencies
+    Runtime-->>Agent: LOCAL_READY / BLOCKED / NEEDS_INVESTIGATION
+    opt Explicitly approved investigation or revalidation
+        Agent->>Runtime: Execute Android recipe or import trusted results
+        Runtime->>App: Bounded actions and declared assertions
+        App-->>Runtime: UI or test observations
+        Runtime->>Store: Store evidence with artifact and environment conditions
+        Runtime-->>Agent: Goal result and separate restoration result
+        Agent->>Runtime: Propose scoped claim referencing evidence
+        Runtime-->>Agent: Candidate ID and local verification result
+        Human->>Agent: Review statement, evidence scope and approval
+        Agent->>Runtime: accept(candidate, expected version, expected revision)
+        Runtime->>Store: Atomically publish complete knowledge revision
+        Runtime-->>Agent: Published revision
+    end
+    Agent->>Runtime: New session: recall current task and conditions
+    Runtime->>Store: Recheck applicability, anchors, evidence and dependencies
+    Runtime-->>Agent: Applicable knowledge, or explicit refusal to reuse
+```
+
+The investigation sequence illustrates the Android/trusted-test path. iOS
+capture only records a screenshot; trusted XCTest/XCUITest predicate results
+must be imported separately. A failed restoration cannot be presented as a
+fully successful journey, even if a narrower goal assertion passed.
+
 ## Requirements and quick start
 
 Python 3.9+; the runtime has no third-party dependencies. Run from this checkout:
