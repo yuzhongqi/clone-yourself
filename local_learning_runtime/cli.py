@@ -14,6 +14,7 @@ from .core import MAX_EVIDENCE_BYTES, RuntimeErrorBase, Store, file_digest, requ
 from .devices import android_capture, ios_capture, run_android_recipe
 from .knowledge import catalog, export_portal, import_graph
 from .acceptance import android_acceptance
+from .discovery import discover
 
 
 def read_json(path: str) -> Any:
@@ -28,6 +29,10 @@ def parser() -> argparse.ArgumentParser:
                         default=Path(os.environ.get("LLR_HOME", "~/.local-learning-runtime")).expanduser())
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("init")
+    discovery = commands.add_parser("discover")
+    discovery.add_argument("--cwd", type=Path, default=Path.cwd())
+    discovery.add_argument("--session", required=True)
+    discovery.add_argument("--platform", choices=["android", "ios"])
     register = commands.add_parser("register")
     register.add_argument("workspace")
     register.add_argument("--root", type=Path, required=True)
@@ -105,6 +110,8 @@ def parser() -> argparse.ArgumentParser:
 def dispatch(store: Store, args: argparse.Namespace) -> Any:
     if args.command == "init":
         return {"status": "ok", "home": str(store.home), "model_calls": 0}
+    if args.command == "discover":
+        return discover(store, args.cwd, args.session, args.platform)
     if args.command == "register":
         return store.register(args.workspace, args.root, args.platform)
     if args.command == "anchor":
@@ -163,6 +170,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         output = dispatch(store, args)
         print(json.dumps(output, ensure_ascii=False, indent=2, allow_nan=False))
         if isinstance(output, dict) and output.get("status") in ("BLOCKED", "NEEDS_INVESTIGATION"):
+            return 2
+        if isinstance(output, dict) and output.get("status") in ("AMBIGUOUS", "UNKNOWN_WORKSPACE"):
             return 2
         if isinstance(output, dict) and output.get("verdict") == "FAIL":
             return 2

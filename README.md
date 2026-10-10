@@ -450,6 +450,49 @@ redact any internal data before sending it to an approved provider.
 
 ## VS Code / Codex / OpenClaw integration
 
+### 同一 checkout，不同 VS Code session 如何找到同一份知识
+
+知识不存放在聊天历史中。每个 session 都通过相同的 `LLR_HOME` 读取本地数据库，
+用当前目录匹配已登记的 workspace，再获取同一 published revision。
+
+从任意工作目录调用仓库自带 launcher，无需先 `cd` 到 runtime 或安装 Python 包：
+
+```sh
+python3 /absolute/path/local-learning-runtime/tools/llr.py \
+  discover --cwd /absolute/path/to/project --session unique-session-id
+```
+
+`discover` 按真实目录边界匹配，优先最具体的登记根目录。相同目录对应多个平台时
+返回 `AMBIGUOUS`，可用 `--platform android` 或 `--platform ios` 消歧；未登记目录
+返回 `UNKNOWN_WORKSPACE`，不会因为路径字符串前缀相似就读取其他项目。
+
+结果包含 workspace、state_home、知识 revision、发布知识 ID、任务类型及未验证历史
+大纲；每类最多显示 16 个条目并报告遗漏数。它不会把“找到了知识”当成“当前条件下
+可直接执行”。下一步：
+
+```sh
+python3 /absolute/path/local-learning-runtime/tools/llr.py \
+  catalog --workspace RETURNED_WORKSPACE
+```
+
+真正复用结论仍需 `recall` 和当前条件。每次发现会记录独立 session 读取凭据，
+用于比较不同 session 是否访问了同一个知识库和 revision。
+
+可复用的个人指令模板在
+[adapters/vscode-session.instructions.md](adapters/vscode-session.instructions.md)。
+替换模板路径后，安装到当前客户端实际支持的用户指令位置；不要提交本机路径或
+私人数据。示例 Copilot CLI 用户入口为 `~/.copilot/instructions/`，其他 VS Code
+provider/profile 的位置和加载状态需单独确认。
+
+验收必须分开：
+
+1. **数据层**：不同工作目录中的独立 CLI 进程返回相同 workspace/revision/知识 ID。
+2. **入口层**：实际新 VS Code chat 能看到用户指令，并调用 discover/catalog。
+3. **使用层**：新 session 引用正确知识且保留条件与未验证状态。
+
+进程测试不等于真实 chat 验收；指令已保存也不等于每次必然调用。本地代码无法
+保证模型自觉遵守，强制执行需要客户端 hook 或受控执行网关。
+
 All three can invoke the same CLI and consume JSON. No extension or client config
 is automatically installed or modified.
 

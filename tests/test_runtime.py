@@ -13,6 +13,7 @@ from local_learning_runtime.devices import (android_capture, android_identity, a
                                            run_android_recipe)
 from local_learning_runtime.knowledge import catalog, export_portal, import_graph
 from local_learning_runtime.acceptance import android_acceptance
+from local_learning_runtime.discovery import discover
 
 
 class RuntimeTests(unittest.TestCase):
@@ -459,6 +460,46 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeErrorBase, "owned"):
             android_acceptance(self.store, "example/android", "test", "com.example.app",
                                "another.app:id/home", {}, self.root / "out", True)
+
+    def test_discovery_uses_directory_boundary_not_prefix(self):
+        sibling = self.root / "workspace-other"
+        sibling.mkdir()
+        self.assertEqual(discover(self.store, sibling, "sibling")["status"], "UNKNOWN_WORKSPACE")
+
+    def test_discovery_finds_nested_checkout_and_stable_revision(self):
+        published = self.publish()
+        nested = self.source / "nested"
+        nested.mkdir()
+        first = discover(self.store, self.source, "session-a")
+        second = discover(self.store, nested, "session-b")
+        self.assertEqual(first["workspace"], second["workspace"])
+        self.assertEqual(first["claim_ids"], second["claim_ids"])
+        self.assertEqual(second["revision"], published["revision"])
+        self.assertEqual(second["knowledge_counts"]["published"], 1)
+
+    def test_discovery_prefers_most_specific_root(self):
+        nested = self.source / "nested"
+        nested.mkdir()
+        self.store.register("nested/android", nested, "android")
+        self.assertEqual(discover(self.store, nested, "session")["workspace"], "nested/android")
+
+    def test_discovery_requires_platform_when_same_root_ambiguous(self):
+        self.store.register("example/ios", self.source, "ios")
+        self.assertEqual(discover(self.store, self.source, "session")["status"], "AMBIGUOUS")
+        self.assertEqual(discover(self.store, self.source, "ios-session", "ios")["workspace"],
+                         "example/ios")
+
+    def test_discovery_launcher_works_from_external_cwd(self):
+        self.publish()
+        launcher = Path(__file__).resolve().parents[1] / "tools" / "llr.py"
+        result = subprocess.run([sys.executable, str(launcher), "--home", str(self.home),
+                                 "discover", "--session", "external"], cwd=self.source,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        packet = json.loads(result.stdout)
+        self.assertEqual(packet["workspace"], "example/android")
+        self.assertEqual(packet["knowledge_counts"]["published"], 1)
+        self.assertEqual(self.store.db.execute("SELECT count(*) FROM discoveries").fetchone()[0], 1)
 
 
 if __name__ == "__main__":
