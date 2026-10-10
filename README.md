@@ -8,6 +8,62 @@ and recalls applicable knowledge in later sessions.
 fact or that a plugin can intercept every VS Code/Codex/OpenClaw operation.**
 No model API, recurring job, private memo import, or account login is started.
 
+## 想了解本地知识：按需生成 HTML
+
+**仓库交付生成能力，不交付私人知识数据。** 当用户说“让我看看本地已经学到了什么”
+或“生成人能读的知识页面”时，使用本仓库的本地生成器，而不是上传数据库，也不是
+让模型凭聊天记忆重新编写结论。
+
+```text
+本机 runtime.sqlite + evidence/
+    → catalog：读取指定 workspace 的本地记录并检查完整性
+    → export-portal：确定性渲染中文知识卡片
+    → 本机 index.html（人阅读）+ catalog.json（agent 读取）
+```
+
+从本仓库目录运行，替换下面的示例路径和 workspace：
+
+```sh
+python3 -m local_learning_runtime \
+  --home /absolute/private/runtime-state \
+  export-portal --workspace sample/android \
+  --output /absolute/private/knowledge-pages/view-001
+```
+
+无需安装额外依赖，不启动模型、网络服务或 app。`--home` 必须放在子命令前；
+也可以用 `LLR_HOME` 指定本地状态目录。默认状态目录为
+`~/.local-learning-runtime`。
+
+命令返回本地 HTML 路径、JSON 路径、知识 revision，以及发布知识和历史记录数量。
+在浏览器打开返回的 `index.html`，即可查看：
+
+- 已发布知识：结论、适用边界、完整性检查结果、相关证据；
+- 历史线索：保留原状态，明确标为尚未重新验证；
+- 待处理项：候选结论和未解决的问题；
+- 证据：可读的断言节点或结果摘要，原始内容按需展开。
+
+页面不是重新“创造”知识。人类视图与 agent JSON 来自同一份本地数据和 revision；
+未知内容不补写，检查失败不包装成成功。当前渲染器不调用 LLM：已有中文记录直接
+展示，受控验收模板用固定中文说明，其他任意语言的结论保留原文，不保证自动翻译。
+
+### Agent 按需展示协议
+
+1. 确认用户要查看的本地状态目录和 workspace；存在歧义时询问，不默选其他项目。
+2. 调用 `export-portal`，将输出放在 Git 仓库之外的新目录，不覆盖旧快照。
+3. 向用户返回生成的本地 HTML 链接；有浏览器能力时可打开该文件。
+4. 说明这是指定 revision 的离线快照；数据变化后重新生成，不返回旧页面冒充最新结果。
+5. 文件缺失、校验失败或 workspace 未登记时明确报告；没有记录就显示空状态，
+   不将历史笔记自动升级为已验证知识。
+6. 不提交、推送或上传数据库、HTML、JSON、截图、日志和私人知识。
+   不为了“展示知识”启动云端学习或额外 app 操作。
+
+这个协议是客户端可以采用的显式调用流程，不是已经安装的自动触发 hook。
+运行时完整性检查针对记录条件，不独立证明当前设备或后端环境仍然相同。
+
+实现入口：[knowledge.py](local_learning_runtime/knowledge.py)；
+CLI 入口：[cli.py](local_learning_runtime/cli.py)；
+回归测试：[test_runtime.py](tests/test_runtime.py)。
+
 ## Architecture overview
 
 Solid connections below represent implemented local operations or explicit
