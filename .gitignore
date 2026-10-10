@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.llr/
+*.sqlite*
+*.db
+.env
+*.png
+*.mp4
+*.apk
+*.ipa
+*.xcresult
+private/
