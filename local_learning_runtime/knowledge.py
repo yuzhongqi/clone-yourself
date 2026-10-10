@@ -93,34 +93,87 @@ def catalog(store: Store, workspace: str) -> Dict[str, Any]:
             "legacy": legacy, "candidates": candidates, "questions": questions}
 
 
+def escaped(value: Any) -> str:
+    return html.escape(str(value))
+
+
+def technical_details(item: Dict[str, Any]) -> str:
+    return ('<details class="technical"><summary>技术记录（ID、版本与原始数据）</summary><pre>'
+            + escaped(json.dumps(item, ensure_ascii=False, indent=2)) + "</pre></details>")
+
+
+def condition_list(values: Dict[str, Any]) -> str:
+    labels = {"artifact_sha256": "安装包指纹", "os_api": "Android API",
+              "account_state": "账户核验", "package": "应用包名",
+              "purpose": "验证用途", "account_kind": "账户类型",
+              "locale": "语言", "bundle_id": "应用标识"}
+    translations = {"not-attested": "未独立核验", "read-only-acceptance": "只读验收"}
+    return "<dl>" + "".join("<dt>" + escaped(labels.get(key, key)) + "</dt><dd>"
+                            + escaped(translations.get(value, value)) + "</dd>"
+                            for key, value in values.items()) + "</dl>"
+
+
+def published_card(claim: Dict[str, Any], evidence_labels: Dict[str, str]) -> str:
+    spec = claim["spec"]
+    passed = claim["local_integrity"]["status"] == "PASS"
+    title = spec["statement"]
+    explanation = "已登记的检查支持下面这条结论。"
+    # Only the constrained acceptance producer owns this exact statement format.
+    prefix = "In this recorded run, the unique enabled UI node "
+    suffix = (" was observed before and after app restart. This does not prove "
+              "account identity, full feature operation, or source execution.")
+    if (spec["task_type"] == "app-restart-observation"
+            and title.startswith(prefix) and title.endswith(suffix)):
+        title = "应用重启后，指定界面节点仍存在且可用"
+        explanation = ("这次运行在重启前、重启后都找到了同一个唯一且启用的界面节点。"
+                       "这只能证明该节点的可见结构与启用状态，不能证明整个功能正常。")
+    links = []
+    for evidence_id in dict.fromkeys(check["evidence_id"] for check in spec["checks"]):
+        links.append('<a href="#evidence-' + escaped(evidence_id) + '">'
+                     + escaped(evidence_labels[evidence_id]) + "</a>")
+    status = "已发布 · 记录条件下检查通过" if passed else "暂停复用 · 需要检查"
+    reason = ("新任务仍需核对当前构建、账户和配置，不能把历史结果当作现在的保证。"
+              if passed else claim["local_integrity"]["reason"])
+    return ('<article class="card"><span class="badge ' + ("pass" if passed else "warn") + '">'
+            + status + "</span><h3>" + escaped(title) + "</h3><p>" + escaped(explanation)
+            + '</p><div class="callout"><strong>怎么使用？</strong><p>' + escaped(reason)
+            + '</p></div><p class="muted">未证明：账户身份、全部业务流程、具体源码调用链。'
+            + '</p><h4>验证依据</h4><p class="links">' + " · ".join(links)
+            + '</p><details><summary>适用条件与复验提示</summary>'
+            + condition_list(spec["conditions"])
+            + '<p>构建或条件变化后，用相同操作与断言重新验证；agent 使用前调用 recall。</p>'
+            + "</details>" + technical_details(claim) + "</article>")
+
+
+def legacy_card(item: Dict[str, Any]) -> str:
+    node = item["source_node"]
+    status = {"partial": "原记录只完成了一部分", "observed": "原记录包含运行观察",
+              "needs_user_decision": "需要用户决定", "candidate": "原记录仍为候选"}
+    return ('<article class="card"><span class="badge warn">历史笔记 · 尚未重新验证</span><h3>'
+            + escaped(node.get("title", node["id"])) + "</h3><p>"
+            + escaped(node.get("summary", "原记录未提供摘要。")) + '</p><p class="muted">'
+            + escaped(status.get(node.get("status"), "原状态：" + str(node.get("status", "未知"))))
+            + '</p><div class="callout">可用于寻找线索，不能据此声明当前 app 已验证通过。'
+            + "需要按原条件复验后才能发布。</div>" + technical_details(item) + "</article>")
+
+
 def export_portal(store: Store, workspace: str, output: Path) -> Dict[str, Any]:
     output = output.expanduser().resolve()
     require(not output.exists(), "Portal output already exists; choose a new revision directory")
     data = catalog(store, workspace)
-    sections = []
-    for heading, items in (("Published claims", data["claims"]),
-                           ("Unverified legacy intake", data["legacy"]),
-                           ("Unpublished candidates", data["candidates"]),
-                           ("Investigation queue", data["questions"])):
-        cards = []
-        for item in items:
-            title = (item.get("spec", {}).get("id") or item.get("source_node", {}).get("title")
-                     or item.get("id") or "Knowledge item")
-            cards.append("<article><h3>" + html.escape(str(title)) + "</h3><pre>"
-                         + html.escape(json.dumps(item, ensure_ascii=False, indent=2))
-                         + "</pre></article>")
-        sections.append("<section><h2>" + heading + "</h2>"
-                        + ("".join(cards) if cards else "<p>No entries.</p>") + "</section>")
     evidence_sections = []
     total = 0
     evidence_ids = sorted({check["evidence_id"] for claim in data["claims"]
                            for check in claim["spec"]["checks"]})
+    evidence_labels = {item: "证据 " + str(index + 1)
+                       for index, item in enumerate(evidence_ids)}
     for evidence_id in evidence_ids:
         try:
             row, raw = store.evidence(evidence_id)
         except (RuntimeErrorBase, OSError) as exc:
-            evidence_sections.append("<article><h3>" + html.escape(evidence_id)
-                                     + "</h3><p>BLOCKED: " + html.escape(str(exc)) + "</p></article>")
+            evidence_sections.append('<article id="evidence-' + escaped(evidence_id) + '"><h3>'
+                                     + evidence_labels[evidence_id]
+                                     + "</h3><p>证据不可用：" + escaped(exc) + "</p></article>")
             continue
         total += len(raw)
         require(total <= 32 * 1024 * 1024, "Portal evidence exceeds 32 MiB")
@@ -128,25 +181,108 @@ def export_portal(store: Store, workspace: str, output: Path) -> Dict[str, Any]:
             body = '<img alt="Recorded evidence" src="data:image/png;base64,' \
                    + base64.b64encode(raw).decode("ascii") + '">'
         else:
-            body = "<pre>" + html.escape(raw.decode("utf-8")) + "</pre>"
-        evidence_sections.append("<article><h3>" + html.escape(evidence_id) + "</h3>" + body
-                                 + "</article>")
-    page = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+            if row["media_type"] == "application/xml":
+                nodes = list(ET.fromstring(raw).iter("node"))
+                relevant = [check for claim in data["claims"] for check in claim["spec"]["checks"]
+                            if check["evidence_id"] == evidence_id and check["kind"] == "ui_node"]
+                rows = []
+                for check in relevant:
+                    selected = [node for node in nodes
+                                if all(node.get(k) == v for k, v in check["selector"].items())]
+                    for node in selected:
+                        rows.append("<tr><td>" + escaped(node.get("resource-id", "")) + "</td><td>"
+                                    + escaped(node.get("text") or "无文本") + "</td><td>"
+                                    + ("是" if node.get("enabled") == "true" else "否")
+                                    + "</td></tr>")
+                body = ("<p>来自 app 的界面结构快照。下表只展示与断言相关的节点，"
+                        "不是整个界面的功能测试。</p><div class=\"table-scroll\"><table>"
+                        "<tr><th>目标节点</th><th>显示文字</th><th>是否启用</th></tr>"
+                        + "".join(dict.fromkeys(rows)) + "</table></div>")
+            else:
+                result = json.loads(raw)
+                body = "<p>来自运行报告的结构化证据；完整内容可在下方展开。</p>"
+                if isinstance(result, dict) and "goal_verdict" in result:
+                    labels = {"PASS": "通过", "FAIL": "失败", "PARTIAL": "部分完成",
+                              "INCONCLUSIVE": "无法确定", "NOT_VERIFIED": "未验证"}
+                    body += condition_list({
+                        "目标断言": labels.get(result["goal_verdict"], result["goal_verdict"]),
+                        "观测后置条件": labels.get(result.get("restoration"), result.get("restoration")),
+                        "整体结果": labels.get(result.get("verdict"), result.get("verdict"))})
+            body += "<details><summary>查看原始证据</summary><pre>" \
+                    + escaped(raw.decode("utf-8")) + "</pre></details>"
+        evidence_sections.append('<article class="card" id="evidence-' + escaped(evidence_id)
+                                 + '"><h3>' + evidence_labels[evidence_id] + "</h3>" + body
+                                 + '<details><summary>证据来源与指纹</summary>'
+                                 + condition_list(dict(json.loads(row["conditions"]),
+                                                       sha256=row["sha256"]))
+                                 + "</details></article>")
+    sections = [
+        '<section id="verified"><h2>已经验证了什么</h2>'
+        + ("".join(published_card(item, evidence_labels) for item in data["claims"])
+           or "<p>还没有发布知识。先完成一个有证据的运行验证。</p>") + "</section>",
+        '<section id="history"><h2>以前积累的线索</h2><p class="muted">'
+        + "保留旧笔记的范围和未完成项；导入不代表验证。</p>"
+        + ("".join(legacy_card(item) for item in data["legacy"]) or "<p>没有导入历史记录。</p>")
+        + "</section>"]
+    pending = []
+    for item in data["candidates"]:
+        task_name = {"app-restart-observation": "应用重启观察"}.get(
+            item["spec"]["task_type"], item["spec"]["task_type"])
+        pending.append('<article class="card"><span class="badge warn">待审阅 · 未发布</span><h3>'
+                       + escaped(task_name) + '：候选结论尚未发布</h3><p>'
+                       + '候选不等于事实。检查证据、断言和适用范围后，再决定是否发布。</p>'
+                       + '<details><summary>查看候选原文</summary><p>'
+                       + escaped(item["spec"]["statement"]) + '</p></details>'
+                       + technical_details(item) + "</article>")
+    for item in data["questions"]:
+        pending.append('<article class="card"><h3>待调查：'
+                       + escaped(item["task"]["task_type"]) + '</h3><p>'
+                       + "这个任务尚未找到可直接复用的知识，需要调查或复验。</p>"
+                       + technical_details(item) + "</article>")
+    sections.append('<section id="pending"><h2>还需要做什么</h2>'
+                    + ("".join(pending) or "<p>没有登记待处理项；这不表示已覆盖全部功能。</p>")
+                    + "</section>")
+    page = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
 content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Local Learning Knowledge</title><style>
-body{font:16px system-ui;margin:2rem auto;max-width:1100px;padding:0 1rem}
-article{border:1px solid #aaa;border-radius:8px;padding:1rem;margin:1rem 0}
-pre{white-space:pre-wrap;overflow-wrap:anywhere}img{max-width:100%}
-</style></head><body><h1>Local Learning Knowledge</h1>"""
-    page += "<p>Workspace: " + html.escape(workspace) + "</p><p>Revision: " \
-            + html.escape(str(data["revision"])) + "</p>"
-    page += ("<p>Private offline snapshot, not a live dashboard. PASS checks recorded conditions "
-             "only. Legacy notes are not verified. Re-export after publication or drift.</p>"
-             '<p><a href="catalog.json">Agent-readable JSON catalog</a></p>')
-    page += "".join(sections) + "<section><h2>Evidence</h2>" + "".join(evidence_sections) \
-            + "</section></body></html>"
+<title>本地学习 · 知识与验证</title><style>
+:root{color-scheme:light}*{box-sizing:border-box}
+body{font:16px/1.7 system-ui,sans-serif;margin:0;background:#f4f6fa;color:#24324a}
+main{max-width:1050px;margin:auto;padding:32px 20px}
+h1{font-size:32px;margin:0}h2{margin:36px 0 12px}h3{font-size:21px;margin:12px 0}
+h4{margin-bottom:8px}.muted{color:#58677b}
+.card{background:white;border:1px solid #dce3ee;border-radius:14px;padding:24px;margin:16px 0}
+.badge{font-size:13px;font-weight:650;border-radius:20px;padding:5px 10px;display:inline-block}
+.pass{background:#e3f3ec;color:#176343}.warn{background:#fff0d5;color:#795000}
+.callout{background:#f2f5fa;border-left:3px solid #5378b0;padding:12px 16px;margin:16px 0}
+.callout p{margin:4px 0}.stats{display:flex;gap:12px;flex-wrap:wrap;margin:24px 0}
+.stat{background:white;border:1px solid #dce3ee;border-radius:12px;padding:16px 24px}
+.stat b{display:block;font-size:28px}nav{display:flex;gap:18px;flex-wrap:wrap}
+a{color:#245bb0}details{border-top:1px solid #e1e7ef;padding:12px 0;margin-top:12px}
+summary{cursor:pointer;color:#345b89}pre{font:13px/1.6 monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+dl{display:grid;grid-template-columns:140px 1fr;gap:8px}dt{color:#58677b}dd{margin:0;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:10px;border-bottom:1px solid #e1e7ef}
+.table-scroll{overflow-x:auto}td{overflow-wrap:anywhere}img{max-width:100%}
+@media(max-width:600px){h1{font-size:24px}.card{padding:16px}dl{grid-template-columns:1fr}dd{margin-bottom:8px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.stat{padding:10px;font-size:12px}.stat b{font-size:24px}}
+</style></head><body><main><h1>本地学习 · 知识与验证</h1>"""
+    page += '<p class="muted">' + escaped(workspace) + " · 私人离线知识快照</p>"
+    page += ("<p>这里回答三个问题：我们验证了什么？哪些只是历史线索？下一次能否直接使用？</p>"
+             '<div class="stats"><div class="stat"><b>' + str(len(data["claims"]))
+             + '</b>已发布知识</div><div class="stat"><b>' + str(len(data["legacy"]))
+             + '</b>待复验历史</div><div class="stat"><b>'
+             + str(len(data["candidates"]) + len(data["questions"])) + '</b>待处理项</div></div>'
+             '<nav><a href="#verified">已验证知识</a><a href="#history">历史线索</a>'
+             '<a href="#pending">下一步</a><a href="#evidence">验证证据</a></nav>'
+             '<div class="callout"><strong>这不是当前 app 的实时保证。</strong>'
+             '检查通过只针对记录的条件；换构建或环境后需要重新核对。'
+             '页面导出后不会自动刷新，也不代替 agent 的 recall 检查。</div>')
+    page += "".join(sections) + '<section id="evidence"><h2>用什么证明</h2>' + "".join(evidence_sections) \
+            + '</section><footer><details><summary>给 agent 与开发者的入口</summary>' \
+            + '<p><a href="catalog.json">同源 JSON 知识目录</a></p><p>知识版本：' \
+            + escaped(data["revision"]) + "</p></details></footer></main>" \
+            + "</body></html>"
     output.mkdir(parents=True, mode=0o700)
     (output / "catalog.json").write_text(json.dumps(data, ensure_ascii=False, indent=2),
                                        encoding="utf-8")

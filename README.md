@@ -455,6 +455,14 @@ include local integrity status. Conditions remain recorded conditions, not an
 attestation of the current device. Referenced evidence is embedded in the page
 after fingerprint checking, with a 32 MiB total evidence cap.
 
+The human view uses Chinese knowledge cards: conclusions, reuse limits,
+historical gaps and next actions appear first. Conditions, IDs and raw evidence
+are collapsed by default. Evidence links show readable labels and relevant UI
+nodes rather than a full XML dump. The agent JSON retains the original schema.
+Only the exact registered restart-acceptance statement receives a deterministic
+Chinese explanation; other statements are preserved rather than guessed or
+translated by a model.
+
 The portal is static, read-only, offline, escaped HTML with no scripts or remote
 assets. Choose a fresh output directory for each export; existing files are not
 overwritten. Re-export after publication or source/evidence drift. The HTML and

@@ -430,6 +430,20 @@ class RuntimeTests(unittest.TestCase):
         data = json.loads((output / "catalog.json").read_text())
         self.assertEqual(data["claims"][0]["local_integrity"]["status"], "BLOCKED")
 
+    def test_portal_uses_readable_cards_and_collapsed_technical_details(self):
+        self.publish()
+        output = self.root / "readable"
+        export_portal(self.store, "example/android", output)
+        page = (output / "index.html").read_text()
+        self.assertIn('lang="zh-CN"', page)
+        self.assertIn("已经验证了什么", page)
+        self.assertIn("以前积累的线索", page)
+        self.assertIn("怎么使用？", page)
+        self.assertIn("<summary>技术记录", page)
+        self.assertNotIn("<details open", page)
+        self.assertNotIn("<h3>theme-dark</h3>", page)
+        self.assertIn("记录条件下检查通过", page)
+
     def test_catalog_does_not_label_published_candidate_unpublished(self):
         self.publish()
         self.assertEqual(catalog(self.store, "example/android")["candidates"], [])
