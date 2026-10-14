@@ -8,8 +8,34 @@ from typing import Any, Dict
 from .core import Store, RuntimeErrorBase, canonical, require
 from .learning import search, status, run_registered
 from .discovery import discover
+from .context import packet
+from .solutions import route, execute_solution
 
 TOOLS = [
+    {"name": "local_experience_context",
+     "description": "Progressive shared memory: L0 project catalog, L1 theme map, L2 task summaries "
+                    "and L3 pinned detail. Bounded bytes and explicit omissions; no whole-memory injection.",
+     "inputSchema": {"type": "object", "properties": {
+         "cwd": {"type": "string"}, "query": {"type": "string"}, "session": {"type": "string"},
+         "level": {"type": "integer", "enum": [0, 1, 2, 3]}, "node": {"type": "string"},
+         "revision": {"type": "string"}, "cursor": {"type": "integer"}},
+         "required": ["cwd", "query", "session"], "additionalProperties": False}},
+    {"name": "local_experience_route",
+     "description": "Determine whether an exact approved problem contract can be solved locally. "
+                    "Similarity does not authorize execution; missing conditions are UNKNOWN.",
+     "inputSchema": {"type": "object", "properties": {
+         "cwd": {"type": "string"}, "query": {"type": "string"}, "session": {"type": "string"},
+         "parameters": {"type": "object"}, "conditions": {"type": "object"}},
+         "required": ["cwd", "query", "session"], "additionalProperties": False}},
+    {"name": "local_experience_execute",
+     "description": "Execute a verified, previously approved complete solution contract with "
+                    "P/R/Q checks. No new commands or model planning; unverified parameter cases refused.",
+     "inputSchema": {"type": "object", "properties": {
+         "workspace": {"type": "string"}, "solution": {"type": "string"}, "session": {"type": "string"},
+         "invocation": {"type": "string"}, "parameters": {"type": "object"},
+         "conditions": {"type": "object"}},
+         "required": ["workspace", "solution", "session", "invocation", "parameters", "conditions"],
+         "additionalProperties": False}},
     {"name": "local_learning_search",
      "description": "Find relevant private local project knowledge before planning. Identify workspace "
                     "from actual cwd. Return bounded scoped summaries, conditions, revision and evidence "
@@ -48,7 +74,7 @@ def respond(store: Store, message: Dict[str, Any]) -> Dict[str, Any]:
     if method == "initialize":
         return {"protocolVersion": message.get("params", {}).get("protocolVersion", "2024-11-05"),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "local-learning-runtime", "version": "0.2.0"}}
+                "serverInfo": {"name": "local-learning-runtime", "version": "0.4.0"}}
     if method == "ping":
         return {}
     if method == "tools/list":
@@ -59,6 +85,16 @@ def respond(store: Store, message: Dict[str, Any]) -> Dict[str, Any]:
         if params["name"] == "local_learning_search":
             result = search(store, Path(args["cwd"]), args["query"], args["session"],
                             args.get("conditions"))
+        elif params["name"] == "local_experience_context":
+            result = packet(store, Path(args["cwd"]), args["query"], args["session"],
+                            args.get("level", 2), args.get("node"), args.get("revision"),
+                            args.get("cursor", 0))
+        elif params["name"] == "local_experience_route":
+            result = route(store, Path(args["cwd"]), args["query"], args["session"],
+                           args.get("parameters"), args.get("conditions"))
+        elif params["name"] == "local_experience_execute":
+            result = execute_solution(store, args["workspace"], args["solution"], args["session"],
+                                      args["invocation"], args["parameters"], args["conditions"])
         elif params["name"] == "local_learning_status":
             result = status(store, args.get("task_run"))
         elif params["name"] in ("local_learning_validators", "local_learning_validate"):
@@ -94,6 +130,28 @@ def serve(store: Store) -> None:
             if "id" not in message:
                 continue
             result = respond(store, message)
+            output = {"jsonrpc": "2.0", "id": message["id"], "result": result}
+        except (RuntimeErrorBase, OSError, ValueError, KeyError, TypeError) as exc:
+            output = {"jsonrpc": "2.0", "id": message.get("id") if isinstance(message, dict) else None,
+                      "error": {"code": -32602, "message": str(exc)}}
+        sys.stdout.write(canonical(output) + "\n")
+        sys.stdout.flush()
+
+
+def serve_bridge(home: Path) -> None:
+    """Each client owns a stdio bridge, not its own memory service."""
+    from .host import call
+    while True:
+        line = sys.stdin.buffer.readline(256_001)
+        if not line:
+            return
+        message = None
+        try:
+            require(len(line) <= 256_000, "MCP request too large")
+            message = json.loads(line)
+            if "id" not in message:
+                continue
+            result = call(home, "mcp", message)
             output = {"jsonrpc": "2.0", "id": message["id"], "result": result}
         except (RuntimeErrorBase, OSError, ValueError, KeyError, TypeError) as exc:
             output = {"jsonrpc": "2.0", "id": message.get("id") if isinstance(message, dict) else None,

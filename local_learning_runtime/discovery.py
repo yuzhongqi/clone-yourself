@@ -7,6 +7,16 @@ from typing import Any, Dict, Optional
 from .core import Store, canonical, identifier, now, require
 
 
+def infer_platform(query: str) -> Optional[str]:
+    import re
+    platforms = set()
+    if re.search(r"\bandroid\b|安卓", query, re.I):
+        platforms.add("android")
+    if re.search(r"\bios\b|苹果", query, re.I):
+        platforms.add("ios")
+    return next(iter(platforms)) if len(platforms) == 1 else None
+
+
 def register_alias(store: Store, workspace: str, root: Path, require_platform: bool,
                    approve: bool) -> Dict[str, Any]:
     require(approve, "Explicit approval needed for an additional discovery root")
@@ -28,7 +38,7 @@ def register_alias(store: Store, workspace: str, root: Path, require_platform: b
 
 def discover(store: Store, cwd: Path, session: str, platform: Optional[str] = None) -> Dict[str, Any]:
     identifier(session, "Session")
-    require(platform in (None, "android", "ios"), "Unknown platform")
+    require(platform in (None, "android", "ios", "generic"), "Unknown platform")
     cwd = cwd.expanduser().resolve()
     require(cwd.is_dir(), "Current working directory must exist")
     matches = []

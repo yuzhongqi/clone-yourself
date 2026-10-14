@@ -1,4 +1,177 @@
-# Local Learning Runtime
+# 本地个人经验 Agent — 设计目标与实现架构 v0.4
+
+**Local Learning Runtime** 是安装在本机、无独立聊天 App 的共享经验服务。
+VS Code、Codex 的不同 session 通过 hooks、MCP 或 CLI 接入同一个 Agent Host；
+它保存私人经验，按条件复用完整解决流程，并执行明确授权的有界学习任务。
+
+## v0.4 目标与交付边界
+
+| 目标 | 本版实现 | 不能混淆的边界 |
+|---|---|---|
+| 跨 session 连续性 | 按需启动的用户级 Unix-socket Host；每个 MCP 进程是薄桥接器 | 当前服务支持 macOS/Linux，Windows named-pipe 适配器尚未交付 |
+| 已验证路径复用 | 完整 Solution Memo：问题、参数、前置条件 P、步骤 R、结果检查 Q、证据 | 相似度不授权执行；候选观察不能直接变成完整解决流程 |
+| 自动沉淀 | 既有里程碑自动发布；声明问题的批准验证器自动编译解决候选 | 编译候选仍需完整 trial；不自动扩大解决范围 |
+| 分层记忆 | L0 项目目录、L1 主题地图、L2 任务包、L3 pinned 展开；显式预算与遗漏数 | 字节预算不等于客户端实际 token/费用预算 |
+| 本地优先 | 确定性问题 pattern＋有限已验证参数组合；纯本地 P/R/Q 执行 | 自由自然语言／模糊任务可检索，但不会被猜测为可执行 |
+| 零模型路径 | CLI／MCP 受控执行；可选 Codex 只读 prompt gate 直接返回本地结果 | 其他客户端仅注入上下文时不计为零模型接入 |
+| 主动学习 | DRAFT→审批→队列、检查点、暂停、恢复、截止与预算；Host 自动推进批准任务 | 默认不允许模型或 App 操作；当前旧学习暂停不会被解除 |
+| 个体经验 | 显式偏好及待确认习惯假设；同库派生图谱和 HTML | 偏好不是权限，推测不是事实 |
+
+```mermaid
+flowchart TD
+    VS["VS Code sessions"] --> AD["客户端适配器 / MCP 桥"]
+    CX["Codex sessions"] --> AD
+    AD --> HOST["共享本地 Agent Host"]
+    HOST --> SCOPE["用户 / 项目 / 平台识别"]
+    SCOPE --> MEMORY["L0 → L1 → L2 → L3"]
+    MEMORY --> ROUTE{"条件、参数与目标覆盖"}
+    ROUTE -->|满足| EXEC["确定 P/R/Q 流程执行"]
+    ROUTE -->|未知| GAP["明确缺口 / 询问"]
+    GAP -.授权与费用门禁.-> MODEL["模型探索"]
+    EXEC --> LEARN["验证与经验编译"]
+    MODEL --> LEARN
+    LEARN --> DB["私人 SQLite + 证据"]
+    DB --> MEMORY
+    DB --> VIEW["同源图谱 / HTML / JSON"]
+    HOST --> MISSION["批准的有界主动学习任务"]
+    MISSION --> MEMORY
+    MISSION --> LEARN
+```
+
+### 安装与载体
+
+Python 3.9+，无运行时第三方依赖。从 checkout 安装：
+
+```sh
+python3 -m pip install .
+llr setup sample/android --root /absolute/project --platform android \
+  --client copilot --approve
+llr setup sample/android --root /absolute/project --platform android \
+  --client codex --approve
+llr setup sample/android --root /absolute/project --platform android \
+  --client codex-hooks --approve
+```
+
+macOS 自带的旧 pip/setuptools 可能忽略 PEP 621 元数据。源安装建议用私人虚拟环境，
+在其中更新构建工具后安装；不要为本项目修改共享系统 Python。已构建 wheel 的安装
+不需要重建源码。打包验收必须检查 wheel 名称/版本与模块，`UNKNOWN-0.0.0` 不算成功。
+
+也可使用现有 `tools/llr.py`，或发行包自带 `local_learning_runtime/entry.py`。
+不用给新客户端手写仓库脚本路径。安装需要一次授权；Codex hooks 必须在实际客户端
+review/trust，不绕过 trust。模型账号／提供方配置保持不变。
+
+普通 CLI、hooks 与 MCP 请求自动连接同一个用户级 Host。没有批准任务时 Host
+空闲 10 分钟退出；下次按需启动。批准任务在聊天关闭后继续，电脑仍需保持可运行。
+不暴露公网端口；IPC 目录仅当前 OS 用户可访问。
+
+```sh
+llr host-status
+llr doctor
+llr host-stop
+```
+
+`doctor` 展示真正收到的交接凭据；“配置文件存在”不代表客户端已触发。
+旧客户端进程需重新启动以加载新桥接实现。安装包升级后，在没有活动操作时停止旧
+Host，再连接新版本。`host-stop` 拒绝中断正在执行的学习步骤。
+
+### 完整解决 memo
+
+Schema：[solution.v1.schema.json](schemas/solution.v1.schema.json)。
+一份 contract 有问题 pattern、有限 typed 参数、P 条件、R 步骤、Q 断言、结果和边界。
+
+- 条件：实际文件指纹、显式条件相等、版本固定的解决依赖。
+- 步骤：`inspect_file`、已批准的 `run_validator`、结构化 `select`、有界 `branch`。
+- 参数：首版使用明确枚举，每个组合都有自己的验证 case；一次成功不验证整个范围。
+- 流程：无任意 shell、无动态 eval、无模型临时生成步骤。
+- 分支：最多一层、每侧最多 8 步、整体最多 32 步；未实测的分支在执行其动作前拒绝复用。
+- 解决依赖及验证器授权变化会阻止旧流程继续使用。
+
+```sh
+llr solution-propose /private/solution.json --expected-version 0 --approve
+llr solution-verify solution-id --workspace sample/android --session training \
+  --invocation case-1 --parameters /private/inputs.json --conditions /private/conditions.json --approve
+llr route --cwd /absolute/project --query "ordinary approved task" --session new-session
+llr solution-execute solution-id --workspace sample/android --session new-session \
+  --invocation request-1 --parameters /private/inputs.json --conditions /private/conditions.json
+```
+
+`LOCAL_READY` 不等于已解决：实际 Q 通过才返回 `LOCAL_SOLVED`。未知条件返回
+`NEEDS_INPUT`，不适用／失效返回 `BLOCKED`，没有经验返回 `NEEDS_EXPLORATION`。
+完整执行持久保存 proof，并保护重复或中断调用不自动重复副作用。
+
+注册 runner 可额外声明 `problem: {intent, goal, patterns}`。其可信验证结果发布后，
+自动编译 P/R/Q **候选**；它不会因观察 PASS 就被标成 verified solution。
+只读新参数 trial 和新的操作授权也必须区分。
+
+### 分层共享记忆
+
+```sh
+llr define-theme /private/theme.json --workspace sample/android --approve
+llr context --cwd /absolute/project --query "android" --session S --level 0
+llr context --cwd /absolute/project --query "startup" --session S --level 1
+llr context --cwd /absolute/project --query "actual task" --session S --level 2
+llr context --cwd /absolute/project --query "android" --session S --level 3 \
+  --node RETURNED_NODE --revision RETURNED_REVISION --cursor 0
+llr context-refresh --session S
+```
+
+L0 只给目录，L1 给主题关键点与有限成员，L2 给任务候选及完整条件，
+L3 按完整字段展开。默认 6000 UTF-8 bytes，最大 12000；返回遗漏数和 cursor。
+单个必要字段超过预算时显式 `ITEM_TOO_LARGE`，不截掉条件保留结论。
+本地执行器读取完整 contract，不凭摘要执行。
+
+主题别名、成员和一跳关系属于私人项目配置，不把业务关键词写入引擎。
+索引和 summaries 来自一个权威存储；snapshot 固定 revision，任务边界 refresh。
+当前使用本地词法匹配，不声称已提供通用语义理解或大型向量索引。
+
+### 客户端关系与本地优先
+
+既有 MCP 增加：
+`local_experience_context`、`local_experience_route`、`local_experience_execute`。
+普通 task/验证事件继续使用既有 API，不建立平行知识库。
+
+Codex 支持的 UserPromptSubmit hook 自动提供 L2；可选择在 `setup ... --client
+codex-hooks --local-first-readonly --approve` 后，让**精确匹配、已验证、纯文件只读**
+流程直接完成并 block 后续模型请求，结果通过 hook 消息展示。
+
+不匹配、未知条件、涉及 App 的慢操作不会在 prompt hook 中自动扩大执行范围。
+支持其他流程的 CLI／SDK 调用同样零模型；原生聊天仅注入知识的情况仍属于 C2，
+不计为零模型。适配器被禁用、未信任或失败必须单独诊断。
+
+### 主动学习任务
+
+Schema：[mission.v1.schema.json](schemas/mission.v1.schema.json)。
+问题类型：有界 source inventory、单文件 identity 检查、已验证解决流程复验、
+经授权的单次 model explanation。静态 inventory 不代表架构理解完成。
+
+```sh
+llr mission-create /private/mission.json
+llr mission-control mission-id approve --approve
+llr mission-control mission-id start
+llr mission-status mission-id
+llr mission-control mission-id pause
+llr mission-control mission-id resume --approve
+```
+
+Host 自动推进 RUNNING 任务。范围、文件总量、时间、请求次数和花费分别有预算。
+未批准任务不自动运行。中断／未知 runtime outcome 或已尝试的模型请求不会隐式重放。
+CLI `mission-tick` 主要用于显式诊断与验收，正常后台由 Host 驱动。
+
+模型默认关闭。只有私人 `model-gateway.json` 明确登记批准 endpoint、model、rates、
+workspace、凭据环境变量及经过外部核实的 hard cap 后才可发送。
+发送前预留最坏费用；请求携带 reservation 和 request ID；拒绝重定向；
+账单／usage 不明、超额或 credential 缺失会停止，绝不自动重试收费未知请求。
+保守地保留 reservation，不把估算冒充实际账单。
+现有 Copilot 代理未被该代码自动认定具备费用硬限额，也没有被启动夜间模型循环。
+
+### 个体习惯与知识查看
+
+`preference` 支持明确偏好和 inferred 候选；显式确认与版本检查独立于操作权限。
+现有 `export-portal` 继续从本地库生成人可读 HTML 和 agent JSON，并包含解决
+contract、任务和学习 mission 状态。memo、graph、index 不是三份可独立编辑的事实。
+私人数据、export、证据和客户配置都不上传 GitHub。
+
+## 兼容的 v0.2 功能与详细参考
 
 A client-neutral, offline first implementation of evidence-backed app learning.
 It captures observations, checks explicit predicates, publishes reviewed claims,

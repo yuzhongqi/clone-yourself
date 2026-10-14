@@ -202,6 +202,45 @@ class Store:
             CREATE TABLE IF NOT EXISTS validator_invocations (
                 id TEXT PRIMARY KEY, task_run TEXT NOT NULL REFERENCES task_runs(id),
                 state TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS solutions (
+                id TEXT NOT NULL, workspace TEXT NOT NULL REFERENCES workspaces(id),
+                version INTEGER NOT NULL, lifecycle TEXT NOT NULL,
+                body TEXT NOT NULL, fingerprint TEXT NOT NULL, updated_at TEXT NOT NULL,
+                PRIMARY KEY(workspace,id));
+            CREATE TABLE IF NOT EXISTS solution_versions (
+                workspace TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL,
+                body TEXT NOT NULL, fingerprint TEXT NOT NULL,
+                PRIMARY KEY(workspace,id,version));
+            CREATE TABLE IF NOT EXISTS solution_runs (
+                id TEXT PRIMARY KEY, workspace TEXT NOT NULL, solution TEXT NOT NULL,
+                version INTEGER NOT NULL, session TEXT NOT NULL, input_sha TEXT NOT NULL,
+                state TEXT NOT NULL, body TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS solution_cases (
+                workspace TEXT NOT NULL, solution TEXT NOT NULL, version INTEGER NOT NULL,
+                parameters_sha TEXT NOT NULL, run_id TEXT NOT NULL REFERENCES solution_runs(id),
+                PRIMARY KEY(workspace,solution,version,parameters_sha));
+            CREATE TABLE IF NOT EXISTS themes (
+                workspace TEXT NOT NULL REFERENCES workspaces(id), id TEXT NOT NULL,
+                body TEXT NOT NULL, PRIMARY KEY(workspace,id));
+            CREATE TABLE IF NOT EXISTS context_views (
+                revision TEXT PRIMARY KEY, body TEXT NOT NULL, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS context_reads (
+                session TEXT NOT NULL, workspace TEXT NOT NULL, revision TEXT NOT NULL,
+                node TEXT NOT NULL, PRIMARY KEY(session,workspace,revision,node));
+            CREATE TABLE IF NOT EXISTS missions (
+                id TEXT PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(id),
+                state TEXT NOT NULL, body TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS mission_items (
+                mission TEXT NOT NULL REFERENCES missions(id), ordinal INTEGER NOT NULL,
+                state TEXT NOT NULL, body TEXT NOT NULL, result TEXT NOT NULL,
+                updated_at TEXT NOT NULL, PRIMARY KEY(mission,ordinal));
+            CREATE TABLE IF NOT EXISTS mission_model_calls (
+                id TEXT PRIMARY KEY, mission TEXT NOT NULL REFERENCES missions(id),
+                reserved_micro INTEGER NOT NULL, actual_micro INTEGER,
+                state TEXT NOT NULL, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS preferences (
+                id TEXT PRIMARY KEY, workspace TEXT, version INTEGER NOT NULL,
+                kind TEXT NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL);
         """)
 
     def close(self) -> None:
@@ -220,7 +259,7 @@ class Store:
 
     def register(self, workspace: str, root: Path, platform: str) -> Dict[str, Any]:
         identifier(workspace, "Workspace")
-        require(platform in ("android", "ios"), "Platform must be android or ios")
+        require(platform in ("android", "ios", "generic"), "Platform must be android, ios or generic")
         root = root.expanduser().resolve()
         require(root.is_dir(), "Workspace root must exist")
         with self.transaction():

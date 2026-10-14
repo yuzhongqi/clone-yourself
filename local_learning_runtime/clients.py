@@ -5,13 +5,15 @@ import re
 import subprocess
 import sys
 import shlex
+import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .core import Store, canonical, digest, now, require
 from .discovery import discover
 from .learning import begin_task, ingest, load_policy, privacy_key, search, status
 from .privacy import sanitize
+from .context import packet
 
 
 def hook(store: Store, client: str, event: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -23,7 +25,7 @@ def hook(store: Store, client: str, event: str, payload: Dict[str, Any]) -> Dict
     prompt = payload.get("prompt") or payload.get("initialPrompt") or payload.get("initial_prompt")
     context = None
     if isinstance(prompt, str) and prompt.strip() and event in ("sessionStart", "userPromptSubmitted"):
-        context = search(store, Path(cwd), prompt[:2000], session)
+        context = packet(store, Path(cwd), prompt[:2000], session, level=2)
         selected_workspace = context.get("workspace") or ""
         platform = "android" if selected_workspace.endswith("/android") else None
         if selected_workspace.endswith("/ios"):
@@ -56,6 +58,27 @@ def hook(store: Store, client: str, event: str, payload: Dict[str, Any]) -> Dict
         task = "turn-" + digest(canonical([session, payload.get("turn_id"),
                                            payload.get("timestamp"), prompt]).encode())[:24]
         begin_task(store, workspace, session, task, title)
+        policy = load_policy(store, workspace)
+        if client == "codex-hooks" and policy.get("local_first_readonly") is True:
+            from .solutions import route, execute_solution, get_solution, all_steps
+            decision = route(store, Path(cwd), prompt.strip(), session)
+            if decision["status"] == "LOCAL_READY":
+                record = get_solution(store, workspace, decision["solution"])
+                if all(step["op"] in ("inspect_file", "select", "branch") for step in all_steps(record["spec"])):
+                    result = execute_solution(store, workspace, decision["solution"], session,
+                                              task, decision["parameters"], {})
+                    if result["status"] == "LOCAL_SOLVED":
+                        with store.transaction():
+                            body = {"solution": decision["solution"], "result": result,
+                                    "model_request_blocked": True, "host_pid": os.getpid(),
+                                    "adapter_api": "0.4"}
+                            store.db.execute("INSERT OR IGNORE INTO client_receipts VALUES (?,?,?,?,?,?,?)",
+                                             (digest(canonical([session, task, body]).encode()),
+                                              client, session, "localSolved", workspace, canonical(body), now()))
+                        readable = "\n".join(str(key) + ": " + (str(value) if type(value) in
+                            (str, int, bool) else canonical(value)) for key, value in result["result"].items())
+                        return {"decision": "block", "reason": "Solved locally · 已在本地完成\n" + readable,
+                                "systemMessage": "Local solution completed; no model request required."}
         if client != "codex-hooks":
             context = None
     if event == "postToolUse":
@@ -103,6 +126,7 @@ def hook(store: Store, client: str, event: str, payload: Dict[str, Any]) -> Dict
                              "WHERE session=? AND state='in_progress'", (now(), session))
     safe_receipt = {"state_home": str(store.home), "workspace": workspace,
                     "revision": store.revision(), "event": event,
+                    "host_pid": os.getpid(), "adapter_api": "0.4",
                     "context_injected": context is not None,
                     "task_state": [item["state"] for item in status(store)["tasks"]
                                    if item["session"] == session]}
@@ -123,7 +147,7 @@ def hook(store: Store, client: str, event: str, payload: Dict[str, Any]) -> Dict
 def install_codex_hooks(store: Store, root: Path, profile: Path, approve: bool) -> Dict[str, Any]:
     require(approve, "Explicit permission needed to install trusted-review Codex hooks")
     command = " ".join(shlex.quote(arg) for arg in (
-        sys.executable, str(root.resolve() / "tools/llr.py"), "--home", str(store.home),
+        sys.executable, str(launcher_at(root)), "--home", str(store.home),
         "hook", "--client", "codex-hooks"))
     events = {"SessionStart": "sessionStart", "UserPromptSubmit": "userPromptSubmitted",
               "PostToolUse": "postToolUse", "Stop": "agentStop"}
@@ -147,8 +171,7 @@ def install_codex_hooks(store: Store, root: Path, profile: Path, approve: bool) 
 
 def install_copilot(store: Store, root: Path, profile: Path, approve: bool) -> Dict[str, Any]:
     require(approve, "Explicit permission needed to install local client hooks")
-    launcher = root.resolve() / "tools" / "llr.py"
-    require(launcher.is_file(), "Runtime launcher missing")
+    launcher = launcher_at(root)
     directory = profile.expanduser() / "hooks"
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / "local-learning-runtime.json"
@@ -181,9 +204,9 @@ def install_codex(store: Store, root: Path, profile: Path, approve: bool) -> Dic
     require(approve, "Explicit permission needed to install Codex adapters")
     profile = profile.expanduser().resolve()
     config = profile / "config.toml"
-    require(config.is_file(), "Codex profile config missing")
-    launcher = root.resolve() / "tools" / "llr.py"
-    text = config.read_text()
+    profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+    launcher = launcher_at(root)
+    text = config.read_text() if config.exists() else ""
     marker = "[mcp_servers.local_learning]"
     block = (marker + "\ncommand = " + json.dumps(sys.executable) + "\nargs = "
              + json.dumps([str(launcher), "--home", str(store.home), "mcp"]) + "\n")
@@ -228,3 +251,49 @@ def codex_notify(store: Store, payload: Dict[str, Any]) -> Dict[str, Any]:
             completed = subprocess.run(argv + [canonical(payload)], timeout=15, capture_output=True)
             require(completed.returncode == 0, "Existing Codex notify chain failed")
     return result
+
+
+def launcher_at(root: Path) -> Path:
+    source = root.resolve() / "tools" / "llr.py"
+    if source.is_file():
+        return source
+    installed = Path(__file__).resolve().parent / "entry.py"
+    require(installed.is_file(), "Runtime entry point missing")
+    return installed
+
+
+def setup_client(store: Store, workspace: str, root: Path, platform: str,
+                 client: str, profile: Optional[Path], approve: bool,
+                 local_first: bool = False) -> Dict[str, Any]:
+    require(approve, "Explicit approval required to register a project and install client adapter")
+    require(client in ("copilot", "codex", "codex-hooks"), "Unsupported installer client")
+    from .learning import authorize
+    store.register(workspace, root, platform)
+    authorize(store, [workspace], True)
+    target = profile or Path.home() / (".copilot" if client == "copilot" else ".codex")
+    runtime_root = Path(__file__).resolve().parents[1]
+    installer = {"copilot": install_copilot, "codex": install_codex,
+                 "codex-hooks": install_codex_hooks}[client]
+    result = installer(store, runtime_root, target, True)
+    if local_first:
+        require(client == "codex-hooks", "Zero-model native gate only available through supported Codex hooks")
+        path = store.home / "automation.json"
+        policy = json.loads(path.read_text())
+        policy["local_first_readonly"] = True
+        path.write_text(canonical(policy))
+    result.update({"workspace": workspace, "state_home": str(store.home),
+                   "host": "on-demand shared service", "app_scope_expanded": False,
+                   "local_first_readonly": local_first})
+    return result
+
+
+def doctor(store: Store) -> Dict[str, Any]:
+    receipts = [dict(row) for row in store.db.execute(
+        "SELECT client,event,session,workspace,created_at FROM client_receipts "
+        "ORDER BY created_at DESC LIMIT 12")]
+    return {"status": "OK", "state_home": str(store.home), "host_pid": os.getpid(),
+            "registered_workspaces": [dict(row) for row in store.db.execute("SELECT * FROM workspaces")],
+            "recent_handoffs": receipts,
+            "client_trust": "Must be verified in the actual client UI; file presence is not invocation.",
+            "local_only_default": True, "model_gateway_configured": (store.home / "model-gateway.json").exists(),
+            "notice": "Configured gateway is not independently proven to enforce provider billing caps."}

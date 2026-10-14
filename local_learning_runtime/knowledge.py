@@ -88,6 +88,10 @@ def catalog(store: Store, workspace: str) -> Dict[str, Any]:
                 candidates.append({"candidate_id": row["id"], "spec": spec,
                                    "status": "CANDIDATE_NOT_PUBLISHED"})
         questions = [item for item in store.questions() if item["task"]["workspace"] == workspace]
+        solutions = [dict(row, body=json.loads(row["body"])) for row in store.db.execute(
+            "SELECT * FROM solutions WHERE workspace=?", (workspace,))]
+        learning_missions = [dict(row, body=json.loads(row["body"])) for row in store.db.execute(
+            "SELECT * FROM missions WHERE workspace=?", (workspace,))]
         from .learning import status, graph
         tasks = [item for item in status(store)["tasks"] if item["workspace"] == workspace]
         projection = graph(store, workspace)
@@ -101,7 +105,7 @@ def catalog(store: Store, workspace: str) -> Dict[str, Any]:
     return {"schema": "llr.catalog.v1", "workspace": workspace, "revision": revision,
             "claims": sorted(claims, key=lambda item: item["spec"]["id"]),
             "legacy": legacy, "candidates": candidates, "questions": questions,
-            "tasks": tasks, "graph": projection}
+            "tasks": tasks, "graph": projection, "solutions": solutions, "missions": learning_missions}
 
 
 def escaped(value: Any) -> str:
@@ -118,6 +122,8 @@ def condition_list(values: Dict[str, Any]) -> str:
               "account_state": "账户核验", "package": "应用包名",
               "purpose": "验证用途", "account_kind": "账户类型",
               "locale": "语言", "bundle_id": "应用标识"}
+    if values.get("proof_kind") == "local_solution":
+        labels["artifact_sha256"] = "解决流程指纹"
     translations = {"not-attested": "未独立核验", "read-only-acceptance": "只读验收"}
     return "<dl>" + "".join("<dt>" + escaped(labels.get(key, key)) + "</dt><dd>"
                             + escaped(translations.get(value, value)) + "</dd>"
@@ -181,6 +187,14 @@ def export_portal(store: Store, workspace: str, output: Path) -> Dict[str, Any]:
     total = 0
     evidence_ids = sorted({check["evidence_id"] for claim in data["claims"]
                            for check in claim["spec"]["checks"]})
+    for solution in data["solutions"]:
+        for row in store.db.execute("SELECT r.body FROM solution_cases c JOIN solution_runs r ON r.id=c.run_id "
+                                    "WHERE c.workspace=? AND c.solution=? AND c.version=?",
+                                    (workspace, solution["id"], solution["version"])):
+            proof = json.loads(row["body"]).get("evidence")
+            if proof:
+                evidence_ids.append(proof["evidence_id"])
+    evidence_ids = sorted(set(evidence_ids))
     evidence_labels = {item: "证据 " + str(index + 1)
                        for index, item in enumerate(evidence_ids)}
     for evidence_id in evidence_ids:
@@ -240,6 +254,38 @@ def export_portal(store: Store, workspace: str, output: Path) -> Dict[str, Any]:
         + "保留旧笔记的范围和未完成项；导入不代表验证。</p>"
         + ("".join(legacy_card(item) for item in data["legacy"]) or "<p>没有导入历史记录。</p>")
         + "</section>"]
+    solution_cards = []
+    for solution in data["solutions"]:
+        spec = solution["body"]
+        case_count = store.db.execute("SELECT count(*) FROM solution_cases WHERE workspace=? "
+                                     "AND solution=? AND version=?",
+                                     (workspace, solution["id"], solution["version"])).fetchone()[0]
+        verified = solution["lifecycle"] == "verified"
+        steps = {"inspect_file": "核验工作区文件身份", "run_validator": "运行已批准验证器",
+                 "select": "读取已有步骤的结构化结果", "branch": "按实际检查结果选择已验证分支"}
+        operations = "".join("<li>" + escaped(steps.get(step["op"], step["op"])) + "</li>"
+                             for step in spec["steps"])
+        solution_cards.append('<article class="card"><span class="badge '
+            + ("pass" if verified else "warn") + '">' + ("完整经验已验证" if verified else "解决候选／待复验")
+            + "</span><h3>" + escaped(spec["problem"]["goal"]) + "</h3>"
+            + "<p>版本 " + str(solution["version"]) + "；已验证参数组合 " + str(case_count)
+            + " 个。声明参数范围不等于全部已经验证。</p>"
+            + '<div class="callout">新任务先检查前置条件；匹配后执行固定流程，不让模型重写步骤。</div>'
+            + "<h4>解决路径</h4><ol>" + operations + "</ol><h4>未证明的范围</h4><ul>"
+            + "".join("<li>" + escaped(item) + "</li>" for item in spec["boundaries"]) + "</ul>"
+            + "<details><summary>前置条件、参数与成功检查</summary><pre>"
+            + escaped(json.dumps({key: spec[key] for key in
+                                  ("parameters", "preconditions", "postconditions")}, ensure_ascii=False, indent=2))
+            + "</pre></details>" + technical_details(solution) + "</article>")
+    sections.insert(0, '<section id="solutions"><h2>可复用解决流程</h2>'
+                    + ("".join(solution_cards) or "<p>尚无完整解决 memo；验证观察不会自动升级为解决流程。</p>")
+                    + "</section>")
+    if data["missions"]:
+        sections.append('<section id="missions"><h2>主动学习任务</h2>'
+            + "".join('<article class="card"><h3>' + escaped(item["body"]["goal"]) + "</h3><p>队列状态："
+                      + escaped(item["state"]) + "</p><p>检查点完成不代表所有语义结论已验证；"
+                      + "静态清单和模型解释保持各自的证据等级。</p>"
+                      + technical_details(item) + "</article>" for item in data["missions"]) + "</section>")
     pending = []
     for item in data["candidates"]:
         task_name = {"app-restart-observation": "应用重启观察"}.get(
@@ -289,7 +335,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;p
              + '</b>已发布知识</div><div class="stat"><b>' + str(len(data["legacy"]))
              + '</b>待复验历史</div><div class="stat"><b>'
              + str(len(data["candidates"]) + len(data["questions"])) + '</b>待处理项</div></div>'
-             '<nav><a href="#verified">已验证知识</a><a href="#history">历史线索</a>'
+             '<nav><a href="#solutions">解决流程</a><a href="#verified">已验证知识</a><a href="#history">历史线索</a>'
              '<a href="#pending">下一步</a><a href="#evidence">验证证据</a></nav>'
              '<div class="callout"><strong>这不是当前 app 的实时保证。</strong>'
              '检查通过只针对记录的条件；换构建或环境后需要重新核对。'

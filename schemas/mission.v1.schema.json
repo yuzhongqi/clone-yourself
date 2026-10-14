@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicitly authorized bounded learning mission",
+  "type": "object",
+  "required": ["schema", "id", "workspace", "goal", "deadline", "permissions", "budgets", "questions"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "llr.mission.v1"},
+    "id": {"type": "string"},
+    "workspace": {"type": "string"},
+    "goal": {"type": "string"},
+    "deadline": {"type": "string", "format": "date-time"},
+    "permissions": {
+      "type": "object",
+      "required": ["read_source", "run_validators", "allow_model"],
+      "properties": {
+        "read_source": {"type": "boolean"},
+        "run_validators": {"type": "boolean"},
+        "allow_model": {"type": "boolean"}
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "required": ["max_items", "max_seconds", "max_files", "max_model_calls", "max_packet_bytes", "max_spend_micro"],
+      "properties": {
+        "max_items": {"type": "integer", "minimum": 1, "maximum": 32},
+        "max_seconds": {"type": "integer", "minimum": 1, "maximum": 21600},
+        "max_files": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "max_model_calls": {"type": "integer", "minimum": 0, "maximum": 32},
+        "max_packet_bytes": {"type": "integer", "minimum": 1000, "maximum": 12000},
+        "max_spend_micro": {"type": "integer", "minimum": 0, "maximum": 100000000}
+      }
+    },
+    "questions": {"type": "array", "minItems": 1, "maxItems": 32}
+  }
+}

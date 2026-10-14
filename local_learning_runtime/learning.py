@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from .core import (Store, RuntimeErrorBase, canonical, digest, file_digest, identifier,
                    json_pointer, now, object_fields, require)
-from .discovery import discover
+from .discovery import discover, infer_platform
 from .privacy import sanitize
 
 MAX_EVENT_BYTES = 128_000
@@ -332,13 +332,7 @@ def tokenize(text: str) -> set:
 def search(store: Store, cwd: Path, query: str, session: str,
            actual: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     require(isinstance(query, str) and 0 < len(query.encode()) <= 4000, "Query exceeds limit or is empty")
-    mentioned = set()
-    if re.search(r"\bandroid\b|安卓", query, re.I):
-        mentioned.add("android")
-    if re.search(r"\bios\b|苹果", query, re.I):
-        mentioned.add("ios")
-    platform = next(iter(mentioned)) if len(mentioned) == 1 else None
-    found = discover(store, cwd, session, platform)
+    found = discover(store, cwd, session, infer_platform(query))
     if found["status"] != "DISCOVERED":
         return found
     workspace = found["workspace"]
@@ -413,7 +407,17 @@ def register_runner(store: Store, workspace: str, name: str, spec: Dict[str, Any
     load_policy(store, workspace)
     identifier(name, "Runner")
     object_fields(spec, {"argv", "conditions", "checks", "title", "anchors"},
-                  {"conditions_pointer"})
+                  {"conditions_pointer", "problem"})
+    if "problem" in spec:
+        object_fields(spec["problem"], {"intent", "goal", "patterns"})
+        from .solutions import compile_pattern
+        identifier(spec["problem"]["intent"], "Problem intent")
+        require(isinstance(spec["problem"]["goal"], str) and bool(spec["problem"]["goal"]),
+                "Declared solution goal required")
+        require(isinstance(spec["problem"]["patterns"], list) and 0 < len(spec["problem"]["patterns"]) <= 16,
+                "Declared problem patterns required")
+        for pattern in spec["problem"]["patterns"]:
+            compile_pattern(pattern, {})
     require(isinstance(spec["title"], str) and 0 < len(spec["title"]) <= 2000,
             "Runner title must be bounded")
     require(isinstance(spec["checks"], list) and len(spec["checks"]) <= 16, "Invalid runner checks")
@@ -514,6 +518,8 @@ def run_registered(store: Store, workspace: str, runner: str, session: str, task
              "uncertainties": ["Only the registered predicates and recorded runtime conditions."],
              "source": {"runner": runner, "pinned": spec["pinned"],
                         "authorization_sha256": digest(canonical(spec).encode()), "recorded_at": now()}}
+    if "problem" in spec:
+        event["source"]["problem"] = spec["problem"]
     result = ingest(store, event, trusted=True)
     with store.transaction():
         store.db.execute("UPDATE validator_invocations SET state='RECORDED',updated_at=? WHERE id=?",
@@ -531,6 +537,14 @@ def run_registered(store: Store, workspace: str, runner: str, session: str, task
             "revision": store.revision()}
     if result.get("error"):
         recorded["error"] = result["error"]
+    declared_problem = event.get("source", {}).get("problem")
+    if published_claim and declared_problem is not None:
+        from .solutions import compile_from_milestone
+        try:
+            recorded["solution_candidate"] = compile_from_milestone(
+                store, event_id, declared_problem, True)
+        except RuntimeErrorBase as exc:
+            recorded["solution_candidate"] = {"status": "BLOCKED", "reason": str(exc)}
     return recorded
 
 
@@ -568,6 +582,10 @@ def import_debugger_log(store: Store, workspace: str, source: Path, session: str
 def forget_workspace(store: Store, workspace: str, approve: bool) -> Dict[str, Any]:
     require(approve, "Explicit approval required to forget private workspace knowledge")
     store.workspace(workspace)
+    require(store.db.execute("SELECT 1 FROM missions WHERE workspace=? AND state='RUNNING'",
+                             (workspace,)).fetchone() is None, "Pause/cancel active learning before deletion")
+    require(store.db.execute("SELECT 1 FROM solution_runs WHERE workspace=? AND state='RUNNING'",
+                             (workspace,)).fetchone() is None, "Review active/interrupted execution before deletion")
     with store.transaction():
         snapshot = store.snapshot()
         removed_claims = {key for key, claim in snapshot.items()
@@ -587,6 +605,19 @@ def forget_workspace(store: Store, workspace: str, approve: bool) -> Dict[str, A
         store.db.execute("DELETE FROM validator_invocations WHERE task_run IN "
                          "(SELECT id FROM task_runs WHERE workspace=?)", (workspace,))
         store.db.execute("DELETE FROM task_runs WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM solution_cases WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM solution_runs WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM solution_versions WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM solutions WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM themes WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM preferences WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM mission_model_calls WHERE mission IN "
+                         "(SELECT id FROM missions WHERE workspace=?)", (workspace,))
+        store.db.execute("DELETE FROM mission_items WHERE mission IN "
+                         "(SELECT id FROM missions WHERE workspace=?)", (workspace,))
+        store.db.execute("DELETE FROM missions WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM context_reads WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM context_views")
         for table in ("evidence", "legacy_intake", "client_receipts", "discoveries", "sessions"):
             store.db.execute("DELETE FROM " + table + " WHERE workspace=?", (workspace,))
         for table, field in (("candidates", "body"), ("questions", "task")):

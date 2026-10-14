@@ -18,9 +18,14 @@ from .discovery import discover, register_alias
 from .learning import (authorize, ingest, status, graph, search, register_runner, run_registered,
                        import_debugger_log, forget_workspace)
 from .learning import retry_milestone
-from .clients import hook, install_copilot, install_codex, install_codex_hooks, codex_notify
+from .clients import (hook, install_copilot, install_codex, install_codex_hooks,
+                      codex_notify, setup_client, doctor)
 from .mcp import serve
 from .probes import android_node
+from .solutions import propose_solution, execute_solution, route, invalidate_solution
+from .context import packet, define_theme, refresh_context
+from .missions import create_mission, mission_status, control, tick
+from .preferences import save_preference
 
 
 def read_json(path: str) -> Any:
@@ -35,6 +40,73 @@ def parser() -> argparse.ArgumentParser:
                         default=Path(os.environ.get("LLR_HOME", "~/.local-learning-runtime")).expanduser())
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("init")
+    setup = commands.add_parser("setup")
+    setup.add_argument("workspace")
+    setup.add_argument("--root", type=Path, required=True)
+    setup.add_argument("--platform", choices=["android", "ios", "generic"], required=True)
+    setup.add_argument("--client", choices=["copilot", "codex", "codex-hooks"], required=True)
+    setup.add_argument("--profile", type=Path)
+    setup.add_argument("--local-first-readonly", action="store_true")
+    setup.add_argument("--approve", action="store_true")
+    commands.add_parser("host-serve")
+    commands.add_parser("host-status")
+    commands.add_parser("host-stop")
+    commands.add_parser("doctor")
+    preference = commands.add_parser("preference")
+    preference.add_argument("id")
+    preference.add_argument("--text", required=True)
+    preference.add_argument("--kind", choices=["explicit", "inferred"], required=True)
+    preference.add_argument("--expected-version", type=int, required=True)
+    preference.add_argument("--workspace")
+    preference.add_argument("--approve", action="store_true")
+    context = commands.add_parser("context")
+    context.add_argument("--cwd", type=Path, default=Path.cwd())
+    context.add_argument("--query", default="")
+    context.add_argument("--session", required=True)
+    context.add_argument("--level", type=int, choices=[0, 1, 2, 3], default=2)
+    context.add_argument("--node")
+    context.add_argument("--revision")
+    context.add_argument("--cursor", type=int, default=0)
+    context.add_argument("--budget", type=int, default=6000)
+    context_refresh = commands.add_parser("context-refresh")
+    context_refresh.add_argument("--session", required=True)
+    theme = commands.add_parser("define-theme")
+    theme.add_argument("spec")
+    theme.add_argument("--workspace", required=True)
+    theme.add_argument("--approve", action="store_true")
+    proposal = commands.add_parser("solution-propose")
+    proposal.add_argument("spec")
+    proposal.add_argument("--expected-version", type=int, required=True)
+    proposal.add_argument("--approve", action="store_true")
+    router = commands.add_parser("route")
+    router.add_argument("--cwd", type=Path, default=Path.cwd())
+    router.add_argument("--query", required=True)
+    router.add_argument("--session", required=True)
+    router.add_argument("--parameters")
+    router.add_argument("--conditions")
+    for name in ("solution-verify", "solution-execute"):
+        execution = commands.add_parser(name)
+        execution.add_argument("solution")
+        execution.add_argument("--workspace", required=True)
+        execution.add_argument("--session", required=True)
+        execution.add_argument("--invocation", required=True)
+        execution.add_argument("--parameters", required=True)
+        execution.add_argument("--conditions", required=True)
+        execution.add_argument("--approve", action="store_true")
+    invalidation = commands.add_parser("solution-invalidate")
+    invalidation.add_argument("solution")
+    invalidation.add_argument("--workspace", required=True)
+    invalidation.add_argument("--version", type=int, required=True)
+    invalidation.add_argument("--state", choices=["stale", "conflicted", "superseded"], required=True)
+    invalidation.add_argument("--approve", action="store_true")
+    mission = commands.add_parser("mission-create")
+    mission.add_argument("spec")
+    for name in ("mission-control", "mission-status", "mission-tick"):
+        job = commands.add_parser(name)
+        job.add_argument("mission")
+        if name == "mission-control":
+            job.add_argument("action", choices=["approve", "start", "pause", "resume", "cancel"])
+            job.add_argument("--approve", action="store_true")
     retry = commands.add_parser("retry-milestone")
     retry.add_argument("event_id")
     probe = commands.add_parser("probe-android-node")
@@ -97,11 +169,11 @@ def parser() -> argparse.ArgumentParser:
     discovery = commands.add_parser("discover")
     discovery.add_argument("--cwd", type=Path, default=Path.cwd())
     discovery.add_argument("--session", required=True)
-    discovery.add_argument("--platform", choices=["android", "ios"])
+    discovery.add_argument("--platform", choices=["android", "ios", "generic"])
     register = commands.add_parser("register")
     register.add_argument("workspace")
     register.add_argument("--root", type=Path, required=True)
-    register.add_argument("--platform", choices=["android", "ios"], required=True)
+    register.add_argument("--platform", choices=["android", "ios", "generic"], required=True)
     anchor = commands.add_parser("anchor")
     anchor.add_argument("workspace")
     anchor.add_argument("path")
@@ -177,6 +249,41 @@ def parser() -> argparse.ArgumentParser:
 def dispatch(store: Store, args: argparse.Namespace) -> Any:
     if args.command == "init":
         return {"status": "ok", "home": str(store.home), "model_calls": 0}
+    if args.command == "setup":
+        return setup_client(store, args.workspace, args.root, args.platform, args.client,
+                            args.profile, args.approve, args.local_first_readonly)
+    if args.command == "doctor":
+        return doctor(store)
+    if args.command == "context":
+        return packet(store, args.cwd, args.query, args.session, args.level,
+                      args.node, args.revision, args.cursor, args.budget)
+    if args.command == "preference":
+        return save_preference(store, args.id, args.text, args.kind,
+                               args.expected_version, args.approve, args.workspace)
+    if args.command == "context-refresh":
+        return refresh_context(store, args.session)
+    if args.command == "define-theme":
+        return define_theme(store, args.workspace, read_json(args.spec), args.approve)
+    if args.command == "solution-propose":
+        return propose_solution(store, read_json(args.spec), args.expected_version, args.approve)
+    if args.command == "route":
+        return route(store, args.cwd, args.query, args.session,
+                     read_json(args.parameters) if args.parameters else None,
+                     read_json(args.conditions) if args.conditions else None)
+    if args.command in ("solution-verify", "solution-execute"):
+        return execute_solution(store, args.workspace, args.solution, args.session,
+                                args.invocation, read_json(args.parameters), read_json(args.conditions),
+                                args.command == "solution-verify", args.approve)
+    if args.command == "solution-invalidate":
+        return invalidate_solution(store, args.workspace, args.solution, args.version, args.state, args.approve)
+    if args.command == "mission-create":
+        return create_mission(store, read_json(args.spec))
+    if args.command == "mission-control":
+        return control(store, args.mission, args.action, args.approve)
+    if args.command == "mission-status":
+        return mission_status(store, args.mission)
+    if args.command == "mission-tick":
+        return tick(store, args.mission)
     if args.command == "retry-milestone":
         return retry_milestone(store, args.event_id)
     if args.command == "probe-android-node":
@@ -270,18 +377,33 @@ def dispatch(store: Store, args: argparse.Namespace) -> Any:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = parser().parse_args(argv)
-    store = None
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    args = parser().parse_args(arguments)
     try:
-        store = Store(args.home)
-        if args.command == "mcp":
-            serve(store)
+        from .host import call, serve_host, ensure_host, stop_host
+        if args.command == "host-serve":
+            serve_host(args.home)
             return 0
-        output = dispatch(store, args)
+        if args.command == "host-status":
+            output = ensure_host(args.home)
+        elif args.command == "host-stop":
+            output = stop_host(args.home)
+        elif args.command == "mcp":
+            from .mcp import serve_bridge
+            serve_bridge(args.home)
+            return 0
+        else:
+            payload = {"argv": ["--home", str(args.home)] + arguments}
+            if args.command == "hook":
+                raw = sys.stdin.buffer.read(256_001)
+                require(len(raw) <= 256_000, "Hook input too large")
+                payload["hook_input"] = json.loads(raw)
+            output = call(args.home, "command", payload)
         print(json.dumps(output, ensure_ascii=False, indent=2, allow_nan=False))
         if isinstance(output, dict) and output.get("error"):
             return 1
-        if isinstance(output, dict) and output.get("status") in ("BLOCKED", "NEEDS_INVESTIGATION"):
+        if isinstance(output, dict) and output.get("status") in (
+                "BLOCKED", "NEEDS_INVESTIGATION", "NEEDS_INPUT", "NEEDS_EXPLORATION", "FAILED", "ITEM_TOO_LARGE"):
             return 2
         if isinstance(output, dict) and output.get("status") in ("AMBIGUOUS", "UNKNOWN_WORKSPACE"):
             return 2
@@ -294,6 +416,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             subprocess.TimeoutExpired) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
-    finally:
-        if store is not None:
-            store.close()

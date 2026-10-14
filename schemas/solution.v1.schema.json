@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Conditional complete solution memo",
+  "type": "object",
+  "required": ["schema", "id", "workspace", "problem", "parameters", "preconditions", "steps", "postconditions", "result", "boundaries"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "llr.solution.v1"},
+    "id": {"type": "string"},
+    "workspace": {"type": "string"},
+    "problem": {
+      "type": "object",
+      "required": ["intent", "goal", "patterns"],
+      "properties": {
+        "intent": {"type": "string"},
+        "goal": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "patterns": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string"}}
+      }
+    },
+    "parameters": {"type": "object", "maxProperties": 16},
+    "preconditions": {"type": "array", "minItems": 1, "maxItems": 32},
+    "steps": {"type": "array", "minItems": 1, "maxItems": 16},
+    "postconditions": {"type": "array", "minItems": 1, "maxItems": 16},
+    "result": {"type": "object"},
+    "boundaries": {"type": "array", "minItems": 1}
+  }
+}
