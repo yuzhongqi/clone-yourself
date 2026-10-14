@@ -2,11 +2,74 @@
 
 > Your experience. Every session.
 
-A local-first personal experience agent for VS Code and Codex. Share private
-memory across sessions, reuse verified conditional solutions, and learn within
-explicit boundaries - without a separate chat app.
+A local-first experience agent that helps your coding sessions build on what
+you have already learned and verified - instead of starting from scratch.
 
-**Architecture v0.4.** The runtime package remains `local-learning-runtime`,
+## What this repository does
+
+**Clone Yourself gives your existing coding agents a shared, private experience
+layer on your machine.** It is a headless service, not another chat app or a
+replacement for VS Code, Codex, or your chosen model.
+
+An approved task verification can become durable local knowledge. A complete
+solution memo records the problem, prerequisites, fixed steps, success checks,
+evidence, and limits. A later session can find that experience, check whether it
+still applies, and reuse the verified path rather than ask a model to invent it
+again.
+
+| Capability | What you get |
+|---|---|
+| **Shared memory across sessions** | CLI, MCP and supported client hooks connect to one on-demand local Host and private data store. |
+| **Automatic capture of verified work** | Preauthorized validators save scoped observations and evidence as part of execution, without an extra "save this" prompt. Ordinary tool output remains unverified. |
+| **Reusable solution memos** | Versioned prerequisites (P), bounded procedures (R), and outcome assertions (Q), with explicit parameter and branch coverage. |
+| **Progressive recall** | Load a project outline, follow relevant themes, retrieve task summaries, and expand details only when needed - not the whole memory database. |
+| **Local-first execution** | Matching verified contracts execute deterministically. Supported readonly pre-model hooks can return a local result without another model inference. |
+| **Bounded learning missions** | Explicitly approve source-inspection and revalidation queues with checkpoints, deadlines, permissions and budgets. Model work requires a separately verified cost gateway. |
+| **Private, inspectable knowledge** | Generate readable local HTML and matching JSON, inspect provenance, detect conflicts and drift, and delete workspace knowledge. |
+| **Preferences without hidden permission grants** | Keep confirmed preferences and unconfirmed habit hypotheses separate from verified facts and action authorization. |
+
+## How it works
+
+```text
+New task
+  -> Identify the workspace and retrieve relevant local experience
+  -> Check prerequisites, verified scope and permissions
+       -> Known and applicable: execute the fixed path and verify the result
+       -> Missing or unknown: report the gap for authorized investigation
+  -> Persist evidence and appropriately scoped knowledge
+  -> Make it available to the next session
+```
+
+For example, after a file-identity check has been turned into a verified
+contract, a new session can repeat that check locally. If the source changes,
+the old contract is blocked. A successful check does not become a claim that
+the whole project works or that every future version is compatible.
+
+## Important boundaries
+
+- **Local storage is not automatically local inference.** If a client injects
+  retrieved text into a cloud model, that selected text is sent to its provider.
+- **MCP access is not automatic invocation.** Hooks must be installed, supported
+  and trusted; actual client handoffs are diagnosed separately.
+- **Verified observations are not automatically verified solutions.** Complete
+  workflows, parameter combinations and branch paths need their own checks.
+- **No unlimited background learning.** Missions require explicit approval;
+  existing paused learning is not resumed by installation.
+- **Current shared Host support is macOS/Linux.** A Windows transport is not
+  implemented. Arbitrary natural-language requests are not treated as exact
+  executable contracts.
+- **The repository ships software, not your memories.** Real project knowledge,
+  logs, screenshots, account data and generated pages stay outside Git.
+
+## Start here
+
+- [Install on another Mac](#另一台-mac-安装教程)
+- [Architecture and delivered capabilities](#v04-目标与交付边界)
+- [Complete solution memos](#完整解决-memo)
+- [Layered shared memory](#分层共享记忆)
+- [Bounded learning missions](#主动学习任务)
+
+**Runtime compatibility:** the package remains `local-learning-runtime`,
 the CLI remains `llr`, and private data remains in `~/.local-learning-runtime`.
 The repository rename does not require moving existing checkouts or memories.
 
