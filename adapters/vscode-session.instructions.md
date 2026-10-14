@@ -5,12 +5,12 @@ description: "Use when a new local VS Code session needs to find project knowled
 # Shared local knowledge discovery
 
 Template: install as a personal instruction in the active VS Code profile.
-Replace `/ABSOLUTE/PATH/local-learning-runtime/tools/llr.py` with the checkout
+Replace `/ABSOLUTE/PATH/clone-yourself/tools/llr.py` with the checkout
 path. Do not install this template unchanged. Keep private state outside Git.
 
 For a local private project task, including after context recovery:
 
-1. Run `python3 /ABSOLUTE/PATH/local-learning-runtime/tools/llr.py discover --cwd "<actual checkout directory>" --session "<unique session ID>"`.
+1. Run `python3 /ABSOLUTE/PATH/clone-yourself/tools/llr.py discover --cwd "<actual checkout directory>" --session "<unique session ID>"`.
 2. Read the result. DISCOVERED means the directory maps to a registered workspace,
    not that every claim applies to the current app. UNKNOWN_WORKSPACE or AMBIGUOUS
    must be reported, not replaced with another project's knowledge.

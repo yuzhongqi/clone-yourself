@@ -1,28 +1,29 @@
-# 本地个人经验 Agent — 设计目标与实现架构 v0.4
+# Clone Yourself
 
-**Local Learning Runtime** 是安装在本机、无独立聊天 App 的共享经验服务。
-VS Code、Codex 的不同 session 通过 hooks、MCP 或 CLI 接入同一个 Agent Host；
-它保存私人经验，按条件复用完整解决流程，并执行明确授权的有界学习任务。
+> Your experience. Every session.
+
+A local-first personal experience agent for VS Code and Codex. Share private
+memory across sessions, reuse verified conditional solutions, and learn within
+explicit boundaries - without a separate chat app.
+
+**Architecture v0.4.** The runtime package remains `local-learning-runtime`,
+the CLI remains `llr`, and private data remains in `~/.local-learning-runtime`.
+The repository rename does not require moving existing checkouts or memories.
 
 ## 另一台 Mac 安装教程
 
-**安装代码能力，不会带入原机器的私人知识。** 仓库是 private，安装者的 GitHub
-账号需要有访问权限；不同账号需先获得仓库授权。本教程适用于 macOS、Python 3.9+
+**安装代码能力，不会带入原机器的私人知识。** 仓库是 public，克隆无需 GitHub
+账号授权；提交改动仍需要仓库权限或通过 fork/PR。本教程适用于 macOS、Python 3.9+
 及支持对应接口的客户端。核心服务不要求 Android SDK；实际 App 验证才需要相应工具。
 
 ### 1. 获取仓库
 
-先准备 Git、Python 3.9+。下面使用 GitHub CLI；没有 `gh` 时可通过 GitHub Desktop
-或已配置认证的 Git 克隆同一仓库，不必为了核心运行安装 GitHub CLI。
+先准备 Git、Python 3.9+。公开仓库可以直接克隆，不需要 GitHub CLI 或模型账号：
 
 ```sh
-# 已安装 gh 时：使用有仓库权限的 GitHub 账号完成浏览器授权。
-gh auth login --hostname github.com --git-protocol https --web
-gh auth setup-git
-
 mkdir -p "$HOME/Developer"
-gh repo clone yuzhongqi/local-learning-runtime "$HOME/Developer/local-learning-runtime"
-cd "$HOME/Developer/local-learning-runtime"
+git clone https://github.com/yuzhongqi/clone-yourself.git "$HOME/Developer/clone-yourself"
+cd "$HOME/Developer/clone-yourself"
 ```
 
 不要把 GitHub 密码、认证器验证码或 token 写入命令、仓库和知识文件。
@@ -162,7 +163,7 @@ llr context --cwd "$PROJECT_ROOT" --query "Android" --session install-check --le
 
 ```sh
 llr host-stop
-cd "$HOME/Developer/local-learning-runtime"
+cd "$HOME/Developer/clone-yourself"
 git pull --ff-only
 python -m pip install --upgrade .
 llr host-status
@@ -794,7 +795,7 @@ redact any internal data before sending it to an approved provider.
 从任意工作目录调用仓库自带 launcher，无需先 `cd` 到 runtime 或安装 Python 包：
 
 ```sh
-python3 /absolute/path/local-learning-runtime/tools/llr.py \
+python3 /absolute/path/clone-yourself/tools/llr.py \
   discover --cwd /absolute/path/to/project --session unique-session-id
 ```
 
@@ -810,7 +811,7 @@ python3 /absolute/path/local-learning-runtime/tools/llr.py \
 可显式登记包含原 checkout 的父目录别名，保持源码锚点根目录不变：
 
 ```sh
-python3 /absolute/path/local-learning-runtime/tools/llr.py register-alias \
+python3 /absolute/path/clone-yourself/tools/llr.py register-alias \
   --workspace sample/android --root /absolute/path/to/project-root \
   --require-platform --approve
 ```
@@ -821,7 +822,7 @@ iOS/苹果时消歧；未提平台、同时提两个平台时不会默选。别�
 终端 CLI 从子目录成功，不代表 App 从项目根目录也能成功。
 
 ```sh
-python3 /absolute/path/local-learning-runtime/tools/llr.py \
+python3 /absolute/path/clone-yourself/tools/llr.py \
   catalog --workspace RETURNED_WORKSPACE
 ```
 
@@ -987,11 +988,11 @@ knowledge.
 
 ```sh
 python3 -m local_learning_runtime install-client copilot \
-  --runtime-root /absolute/local-learning-runtime --profile ~/.copilot --approve
+  --runtime-root /absolute/clone-yourself --profile ~/.copilot --approve
 python3 -m local_learning_runtime install-client codex \
-  --runtime-root /absolute/local-learning-runtime --profile ~/.codex --approve
+  --runtime-root /absolute/clone-yourself --profile ~/.codex --approve
 python3 -m local_learning_runtime install-client codex-hooks \
-  --runtime-root /absolute/local-learning-runtime --profile ~/.codex --approve
+  --runtime-root /absolute/clone-yourself --profile ~/.codex --approve
 ```
 
 | Client path | Actual integration | Guarantee boundary |
