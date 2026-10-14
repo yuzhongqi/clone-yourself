@@ -1,6 +1,8 @@
 """Explicit capture adapters; no navigation, login, or arbitrary shell actions."""
 
 import re
+import json
+import os
 import subprocess
 import time
 import uuid
@@ -162,8 +164,17 @@ def run_android_recipe(store: Store, recipe: Dict[str, Any], approve: bool) -> D
                         time.sleep(1)
                 require(len(selected) == 1, "Resource ID must match exactly one app node")
                 node = selected[0]
+                from .learning import privacy_key
+                from .privacy import sanitize
+                relevant_keys = {"resource-id", "package", "enabled", "bounds"}
+                relevant_keys.update(step.get("attributes", {}))
+                minimal, _ = sanitize({key: node.get(key, "") for key in relevant_keys},
+                                      privacy_key(store))
+                minimal_tree = ET.Element("hierarchy")
+                ET.SubElement(minimal_tree, "node", minimal)
+                minimal_raw = ET.tostring(minimal_tree, encoding="utf-8")
                 evidence = store.observe(run_id + "-" + phase + "-" + str(index),
-                                         recipe["workspace"], observed, raw, "application/xml")
+                                         recipe["workspace"], observed, minimal_raw, "application/xml")
                 if action == "assert_node":
                     require(all(node.get(key) == value for key, value in step["attributes"].items()),
                             "Goal UI assertion failed")
@@ -200,7 +211,41 @@ def run_android_recipe(store: Store, recipe: Dict[str, Any], approve: bool) -> D
                   "errors": errors}
         evidence = store.observe(run_id + "-report", recipe["workspace"], observed,
                                  canonical(report).encode(), "application/json")
-        return dict(report, report_evidence_id=evidence["evidence_id"])
+        result = dict(report, report_evidence_id=evidence["evidence_id"])
+        policy_path = store.home / "automation.json"
+        if policy_path.exists():
+            policy = json.loads(policy_path.read_text())
+            if recipe["workspace"] in policy.get("workspaces", []):
+                from .learning import ingest
+                observations = {"verdict": verdict, "goal_verdict": report["goal_verdict"],
+                                "restoration": restoration, "assertions": []}
+                for step in reports:
+                    if step["action"] != "assert_node":
+                        continue
+                    definition = recipe["steps"] if step["phase"] == "goal" else recipe["restore"]
+                    expected = definition[step["index"]]["attributes"]
+                    _, raw = store.evidence(step["evidence_id"])
+                    nodes = [node for node in ET.fromstring(raw).iter("node")
+                             if node.get("resource-id") == definition[step["index"]]["resource_id"]
+                             and node.get("package") == package]
+                    require(len(nodes) == 1, "Assertion evidence changed")
+                    observations["assertions"].append({
+                        "resource_id": definition[step["index"]]["resource_id"],
+                        "attributes": {key: nodes[0].get(key) for key in expected}})
+                result["learning"] = ingest(store, {
+                    "schema": "llr.milestone.v1", "workspace": recipe["workspace"],
+                    "session": os.environ.get("LLR_SESSION", "runner-" + run_id),
+                    "task": os.environ.get("LLR_TASK", "journey"),
+                    "milestone": run_id, "title": " ".join(
+                        definition["resource_id"] for definition in recipe["steps"]
+                        if definition["action"] == "assert_node"),
+                    "kind": "runtime_observation", "outcome": verdict, "conditions": observed,
+                    "operations": recipe["steps"] + recipe["restore"], "observation": observations,
+                    "checks": [{"pointer": "/verdict", "expected": "PASS"},
+                               {"pointer": "/assertions", "expected": observations["assertions"]}],
+                    "anchors": [], "uncertainties": ["Only observed UI predicates; no business-wide proof."],
+                    "source": {"runner": "android", "run_id": run_id}}, trusted=True)
+        return result
 
 def bundle_digest(root: Path) -> str:
     require(root.is_dir(), "Simulator app bundle is unavailable")

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "llr.milestone.v1",
+  "title": "Local task verification milestone",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "workspace", "session", "task", "milestone", "title", "kind",
+    "outcome", "conditions", "operations", "observation", "checks",
+    "anchors", "uncertainties"
+  ],
+  "properties": {
+    "schema": {"const": "llr.milestone.v1"},
+    "workspace": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$"},
+    "session": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$"},
+    "task": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$"},
+    "milestone": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "kind": {"enum": ["runtime_observation", "code_inference", "user_evidence", "hypothesis"]},
+    "outcome": {"enum": ["PASS", "FAIL", "PARTIAL", "INCONCLUSIVE"]},
+    "conditions": {"type": "object"},
+    "operations": {"type": "array", "maxItems": 32},
+    "observation": {},
+    "checks": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": ["pointer", "expected"],
+        "additionalProperties": false,
+        "properties": {"pointer": {"type": "string"}, "expected": {}}
+      }
+    },
+    "anchors": {"type": "array", "maxItems": 32},
+    "uncertainties": {"type": "array"},
+    "source": {"type": "object"},
+    "relations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["relation", "target"],
+        "additionalProperties": false,
+        "properties": {
+          "relation": {"enum": ["supports", "contradicts", "supersedes", "depends_on"]},
+          "target": {"type": "string"}
+        }
+      }
+    }
+  }
+}

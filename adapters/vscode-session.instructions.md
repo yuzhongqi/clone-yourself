@@ -24,3 +24,10 @@ For a local private project task, including after context recovery:
 
 This instruction guides client behavior; it is not a deterministic lifecycle
 hook or a guarantee that every model/profile will invoke the command.
+
+For supported clients, prefer installed runtime hooks and the local MCP
+`local_learning_search` tool. `local_learning_validators` lists already approved
+runtime actions; `local_learning_validate` executes one approved validator and
+automatically persists, verifies and publishes its scoped predicates. An extra
+"save knowledge" user instruction is not required. Never register or widen an
+App validator through an agent without explicit user approval.

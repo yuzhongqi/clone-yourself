@@ -14,7 +14,13 @@ from .core import MAX_EVIDENCE_BYTES, RuntimeErrorBase, Store, file_digest, requ
 from .devices import android_capture, ios_capture, run_android_recipe
 from .knowledge import catalog, export_portal, import_graph
 from .acceptance import android_acceptance
-from .discovery import discover
+from .discovery import discover, register_alias
+from .learning import (authorize, ingest, status, graph, search, register_runner, run_registered,
+                       import_debugger_log, forget_workspace)
+from .learning import retry_milestone
+from .clients import hook, install_copilot, install_codex, install_codex_hooks, codex_notify
+from .mcp import serve
+from .probes import android_node
 
 
 def read_json(path: str) -> Any:
@@ -29,6 +35,65 @@ def parser() -> argparse.ArgumentParser:
                         default=Path(os.environ.get("LLR_HOME", "~/.local-learning-runtime")).expanduser())
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("init")
+    retry = commands.add_parser("retry-milestone")
+    retry.add_argument("event_id")
+    probe = commands.add_parser("probe-android-node")
+    probe.add_argument("--device", required=True)
+    probe.add_argument("--app", required=True)
+    probe.add_argument("--resource-id", required=True)
+    probe.add_argument("--adb", default="adb")
+    probe.add_argument("--approve", action="store_true")
+    alias = commands.add_parser("register-alias")
+    alias.add_argument("--workspace", required=True)
+    alias.add_argument("--root", type=Path, required=True)
+    alias.add_argument("--require-platform", action="store_true")
+    alias.add_argument("--approve", action="store_true")
+    debugger = commands.add_parser("import-debugger")
+    debugger.add_argument("source", type=Path)
+    debugger.add_argument("--workspace", required=True)
+    debugger.add_argument("--session", required=True)
+    debugger.add_argument("--task", required=True)
+    debugger.add_argument("--title", required=True)
+    debugger.add_argument("--approve", action="store_true")
+    forgotten = commands.add_parser("forget-workspace")
+    forgotten.add_argument("--workspace", required=True)
+    forgotten.add_argument("--approve", action="store_true")
+    policy = commands.add_parser("authorize-local")
+    policy.add_argument("--workspace", action="append", required=True)
+    policy.add_argument("--approve", action="store_true")
+    incoming = commands.add_parser("ingest")
+    incoming.add_argument("event")
+    states = commands.add_parser("task-status")
+    states.add_argument("--task-run")
+    projection = commands.add_parser("graph")
+    projection.add_argument("--workspace", required=True)
+    lookup = commands.add_parser("search")
+    lookup.add_argument("--cwd", type=Path, default=Path.cwd())
+    lookup.add_argument("--query", required=True)
+    lookup.add_argument("--session", required=True)
+    lookup.add_argument("--conditions")
+    registration = commands.add_parser("register-runner")
+    registration.add_argument("name")
+    registration.add_argument("spec")
+    registration.add_argument("--workspace", required=True)
+    registration.add_argument("--approve", action="store_true")
+    runner = commands.add_parser("run-validator")
+    runner.add_argument("name")
+    runner.add_argument("--workspace", required=True)
+    runner.add_argument("--session", required=True)
+    runner.add_argument("--task", required=True)
+    runner.add_argument("--milestone", required=True)
+    lifecycle = commands.add_parser("hook")
+    lifecycle.add_argument("--client", choices=["copilot", "vscode-local", "codex-hooks"], required=True)
+    lifecycle.add_argument("--event", required=True)
+    installation = commands.add_parser("install-client")
+    installation.add_argument("client", choices=["copilot", "codex", "codex-hooks"])
+    installation.add_argument("--runtime-root", type=Path, required=True)
+    installation.add_argument("--profile", type=Path, required=True)
+    installation.add_argument("--approve", action="store_true")
+    commands.add_parser("mcp")
+    notify = commands.add_parser("notify")
+    notify.add_argument("payload")
     discovery = commands.add_parser("discover")
     discovery.add_argument("--cwd", type=Path, default=Path.cwd())
     discovery.add_argument("--session", required=True)
@@ -91,6 +156,8 @@ def parser() -> argparse.ArgumentParser:
     recipe = commands.add_parser("run-android")
     recipe.add_argument("recipe")
     recipe.add_argument("--approve", action="store_true")
+    recipe.add_argument("--session")
+    recipe.add_argument("--task")
     packet = commands.add_parser("learning-packet")
     packet.add_argument("task")
     packet.add_argument("--question", required=True)
@@ -110,6 +177,42 @@ def parser() -> argparse.ArgumentParser:
 def dispatch(store: Store, args: argparse.Namespace) -> Any:
     if args.command == "init":
         return {"status": "ok", "home": str(store.home), "model_calls": 0}
+    if args.command == "retry-milestone":
+        return retry_milestone(store, args.event_id)
+    if args.command == "probe-android-node":
+        return android_node(args.device, args.app, args.resource_id, args.adb, args.approve)
+    if args.command == "register-alias":
+        return register_alias(store, args.workspace, args.root, args.require_platform, args.approve)
+    if args.command == "import-debugger":
+        return import_debugger_log(store, args.workspace, args.source, args.session, args.task,
+                                   args.title, args.approve)
+    if args.command == "forget-workspace":
+        return forget_workspace(store, args.workspace, args.approve)
+    if args.command == "authorize-local":
+        return authorize(store, args.workspace, args.approve)
+    if args.command == "ingest":
+        return ingest(store, read_json(args.event))
+    if args.command == "task-status":
+        return status(store, args.task_run)
+    if args.command == "graph":
+        return graph(store, args.workspace)
+    if args.command == "search":
+        return search(store, args.cwd, args.query, args.session,
+                      read_json(args.conditions) if args.conditions else None)
+    if args.command == "register-runner":
+        return register_runner(store, args.workspace, args.name, read_json(args.spec), args.approve)
+    if args.command == "run-validator":
+        return run_registered(store, args.workspace, args.name, args.session, args.task, args.milestone)
+    if args.command == "hook":
+        raw = sys.stdin.buffer.read(256_001)
+        require(len(raw) <= 256_000, "Hook input too large")
+        return hook(store, args.client, args.event, json.loads(raw))
+    if args.command == "install-client":
+        installer = {"copilot": install_copilot, "codex": install_codex,
+                     "codex-hooks": install_codex_hooks}[args.client]
+        return installer(store, args.runtime_root, args.profile, args.approve)
+    if args.command == "notify":
+        return codex_notify(store, json.loads(args.payload))
     if args.command == "discover":
         return discover(store, args.cwd, args.session, args.platform)
     if args.command == "register":
@@ -148,6 +251,10 @@ def dispatch(store: Store, args: argparse.Namespace) -> Any:
         return store.invalidate(args.claim, args.reason, args.lifecycle, args.expected_version,
                                 args.expected_revision, args.approve)
     if args.command == "run-android":
+        if args.session:
+            os.environ["LLR_SESSION"] = args.session
+        if args.task:
+            os.environ["LLR_TASK"] = args.task
         return run_android_recipe(store, read_json(args.recipe), args.approve)
     if args.command == "learning-packet":
         return store.learning_packet(read_json(args.task), args.question)
@@ -167,8 +274,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     store = None
     try:
         store = Store(args.home)
+        if args.command == "mcp":
+            serve(store)
+            return 0
         output = dispatch(store, args)
         print(json.dumps(output, ensure_ascii=False, indent=2, allow_nan=False))
+        if isinstance(output, dict) and output.get("error"):
+            return 1
         if isinstance(output, dict) and output.get("status") in ("BLOCKED", "NEEDS_INVESTIGATION"):
             return 2
         if isinstance(output, dict) and output.get("status") in ("AMBIGUOUS", "UNKNOWN_WORKSPACE"):

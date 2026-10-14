@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 import xml.etree.ElementTree as ET
 
 from .core import (MAX_PACKET_BYTES, RuntimeErrorBase, Store, canonical, digest,
-                   identifier, now, require)
+                   identifier, now, require, require_private_location)
 
 
 def import_graph(store: Store, workspace: str, source: Path, node_ids: List[str],
@@ -88,9 +88,20 @@ def catalog(store: Store, workspace: str) -> Dict[str, Any]:
                 candidates.append({"candidate_id": row["id"], "spec": spec,
                                    "status": "CANDIDATE_NOT_PUBLISHED"})
         questions = [item for item in store.questions() if item["task"]["workspace"] == workspace]
+        from .learning import status, graph
+        tasks = [item for item in status(store)["tasks"] if item["workspace"] == workspace]
+        projection = graph(store, workspace)
+        for row in store.db.execute("SELECT m.* FROM milestones m JOIN task_runs t ON t.id=m.task_run "
+                                   "WHERE t.workspace=? AND m.state!='PUBLISHED'", (workspace,)):
+            event = json.loads(row["body"])
+            candidates.append({"candidate_id": row["id"], "spec": {
+                "id": row["id"], "task_type": event["title"],
+                "statement": canonical(event["observation"]), "conditions": event["conditions"]},
+                "status": row["state"], "reason": row["reason"], "epistemic_kind": event["kind"]})
     return {"schema": "llr.catalog.v1", "workspace": workspace, "revision": revision,
             "claims": sorted(claims, key=lambda item: item["spec"]["id"]),
-            "legacy": legacy, "candidates": candidates, "questions": questions}
+            "legacy": legacy, "candidates": candidates, "questions": questions,
+            "tasks": tasks, "graph": projection}
 
 
 def escaped(value: Any) -> str:
@@ -118,6 +129,10 @@ def published_card(claim: Dict[str, Any], evidence_labels: Dict[str, str]) -> st
     passed = claim["local_integrity"]["status"] == "PASS"
     title = spec["statement"]
     explanation = "已登记的检查支持下面这条结论。"
+    if spec.get("provenance", {}).get("kind") == "runtime_observation":
+        title = spec["provenance"].get("title", title)
+        explanation = ("已批准的本地验证器实际运行后，系统自动保存并核验了这组限定断言。"
+                       "结论只适用于记录的对象和条件，不代表整个功能或所有版本正确。")
     # Only the constrained acceptance producer owns this exact statement format.
     prefix = "In this recorded run, the unique enabled UI node "
     suffix = (" was observed before and after app restart. This does not prove "
@@ -159,6 +174,7 @@ def legacy_card(item: Dict[str, Any]) -> str:
 
 def export_portal(store: Store, workspace: str, output: Path) -> Dict[str, Any]:
     output = output.expanduser().resolve()
+    require_private_location(output)
     require(not output.exists(), "Portal output already exists; choose a new revision directory")
     data = catalog(store, workspace)
     evidence_sections = []

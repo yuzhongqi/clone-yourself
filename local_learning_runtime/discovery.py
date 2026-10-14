@@ -7,13 +7,37 @@ from typing import Any, Dict, Optional
 from .core import Store, canonical, identifier, now, require
 
 
+def register_alias(store: Store, workspace: str, root: Path, require_platform: bool,
+                   approve: bool) -> Dict[str, Any]:
+    require(approve, "Explicit approval needed for an additional discovery root")
+    primary = Path(store.workspace(workspace)["root"]).resolve()
+    root = root.expanduser().resolve()
+    require(root.is_dir(), "Alias root must exist")
+    try:
+        primary.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Alias must contain the registered checkout; other checkouts require separate registration") from exc
+    require(root != Path(root.anchor), "Filesystem root cannot be a knowledge alias")
+    with store.transaction():
+        store.db.execute("INSERT INTO workspace_aliases VALUES (?,?,?) ON CONFLICT(workspace,root) "
+                         "DO UPDATE SET requires_platform=excluded.requires_platform",
+                         (workspace, str(root), int(require_platform)))
+    return {"workspace": workspace, "discovery_root": str(root),
+            "source_anchor_root": str(primary), "requires_platform": require_platform}
+
+
 def discover(store: Store, cwd: Path, session: str, platform: Optional[str] = None) -> Dict[str, Any]:
     identifier(session, "Session")
     require(platform in (None, "android", "ios"), "Unknown platform")
     cwd = cwd.expanduser().resolve()
     require(cwd.is_dir(), "Current working directory must exist")
     matches = []
-    for row in store.db.execute("SELECT * FROM workspaces ORDER BY id"):
+    roots = [dict(row, requires_platform=0) for row in store.db.execute(
+        "SELECT * FROM workspaces ORDER BY id")]
+    roots.extend(dict(row) for row in store.db.execute(
+        "SELECT w.id,a.root,w.platform,a.requires_platform FROM workspace_aliases a "
+        "JOIN workspaces w ON w.id=a.workspace"))
+    for row in roots:
         if platform is not None and row["platform"] != platform:
             continue
         root = Path(row["root"]).resolve()
@@ -25,7 +49,10 @@ def discover(store: Store, cwd: Path, session: str, platform: Optional[str] = No
     if matches:
         specificity = max(len(Path(item["root"]).parts) for item in matches)
         matches = [item for item in matches if len(Path(item["root"]).parts) == specificity]
+        matches = list({(item["id"], item["root"]): item for item in matches}.values())
     status = "DISCOVERED" if len(matches) == 1 else "AMBIGUOUS" if matches else "UNKNOWN_WORKSPACE"
+    if any(item["requires_platform"] for item in matches) and platform is None:
+        status = "AMBIGUOUS"
     result: Dict[str, Any] = {
         "schema": "llr.discovery.v1", "status": status, "cwd": str(cwd),
         "session": session, "state_home": str(store.home), "model_calls": 0,

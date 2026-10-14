@@ -88,6 +88,13 @@ def file_digest(path: Path) -> str:
     return result.hexdigest()
 
 
+def require_private_location(path: Path) -> None:
+    resolved = path.expanduser().resolve()
+    for parent in (resolved,) + tuple(resolved.parents):
+        require(not (parent / ".git").exists(),
+                "Private runtime data/output must be outside Git worktrees")
+
+
 def json_pointer(document: Any, pointer: str) -> Any:
     require(isinstance(pointer, str) and (pointer == "" or pointer.startswith("/")),
             "Invalid JSON pointer")
@@ -133,6 +140,7 @@ def check_evidence(check: Dict[str, Any], raw: bytes, media_type: str) -> bool:
 class Store:
     def __init__(self, home: Path):
         self.home = home.expanduser().resolve()
+        require_private_location(self.home)
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.blobs = self.home / "evidence"
         self.blobs.mkdir(exist_ok=True, mode=0o700)
@@ -170,6 +178,30 @@ class Store:
             CREATE TABLE IF NOT EXISTS discoveries (
                 session TEXT PRIMARY KEY, cwd TEXT NOT NULL,
                 workspace TEXT, revision TEXT, manifest TEXT NOT NULL, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS task_runs (
+                id TEXT PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(id),
+                session TEXT NOT NULL, task TEXT NOT NULL, title TEXT NOT NULL,
+                state TEXT NOT NULL, updated_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS milestones (
+                id TEXT PRIMARY KEY, task_run TEXT NOT NULL REFERENCES task_runs(id),
+                input_sha TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL,
+                reason TEXT NOT NULL, claim_id TEXT, revision TEXT, updated_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS knowledge_relations (
+                source TEXT NOT NULL REFERENCES milestones(id),
+                relation TEXT NOT NULL, target TEXT NOT NULL REFERENCES milestones(id),
+                PRIMARY KEY(source,relation,target));
+            CREATE TABLE IF NOT EXISTS client_receipts (
+                id TEXT PRIMARY KEY, client TEXT NOT NULL, session TEXT NOT NULL,
+                event TEXT NOT NULL, workspace TEXT, body TEXT NOT NULL, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS workspace_aliases (
+                workspace TEXT NOT NULL REFERENCES workspaces(id), root TEXT NOT NULL,
+                requires_platform INTEGER NOT NULL,
+                PRIMARY KEY(workspace,root));
+            CREATE TABLE IF NOT EXISTS milestone_attestations (
+                id TEXT PRIMARY KEY REFERENCES milestones(id), signature TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS validator_invocations (
+                id TEXT PRIMARY KEY, task_run TEXT NOT NULL REFERENCES task_runs(id),
+                state TEXT NOT NULL, updated_at TEXT NOT NULL);
         """)
 
     def close(self) -> None:
@@ -255,7 +287,7 @@ class Store:
 
     def validate_spec(self, spec: Dict[str, Any]) -> None:
         object_fields(spec, {"id", "workspace", "task_type", "statement", "conditions",
-                             "anchors", "checks", "dependencies"})
+                             "anchors", "checks", "dependencies"}, {"provenance"})
         for field in ("id", "workspace", "task_type"):
             identifier(spec[field], field)
         self.workspace(spec["workspace"])
