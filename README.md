@@ -4,6 +4,179 @@
 VS Code、Codex 的不同 session 通过 hooks、MCP 或 CLI 接入同一个 Agent Host；
 它保存私人经验，按条件复用完整解决流程，并执行明确授权的有界学习任务。
 
+## 另一台 Mac 安装教程
+
+**安装代码能力，不会带入原机器的私人知识。** 仓库是 private，安装者的 GitHub
+账号需要有访问权限；不同账号需先获得仓库授权。本教程适用于 macOS、Python 3.9+
+及支持对应接口的客户端。核心服务不要求 Android SDK；实际 App 验证才需要相应工具。
+
+### 1. 获取仓库
+
+先准备 Git、Python 3.9+。下面使用 GitHub CLI；没有 `gh` 时可通过 GitHub Desktop
+或已配置认证的 Git 克隆同一仓库，不必为了核心运行安装 GitHub CLI。
+
+```sh
+# 已安装 gh 时：使用有仓库权限的 GitHub 账号完成浏览器授权。
+gh auth login --hostname github.com --git-protocol https --web
+gh auth setup-git
+
+mkdir -p "$HOME/Developer"
+gh repo clone yuzhongqi/local-learning-runtime "$HOME/Developer/local-learning-runtime"
+cd "$HOME/Developer/local-learning-runtime"
+```
+
+不要把 GitHub 密码、认证器验证码或 token 写入命令、仓库和知识文件。
+
+### 2. 在私人虚拟环境安装
+
+不要直接修改 macOS 的共享系统 Python。旧 pip/setuptools 可能生成空的
+`UNKNOWN-0.0.0` 包；使用独立环境并更新构建工具：
+
+```sh
+python3 -m venv "$HOME/.local/share/llr/venv"
+source "$HOME/.local/share/llr/venv/bin/activate"
+
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install .
+python -m pip show local-learning-runtime
+
+llr host-status
+```
+
+当前版本应显示 `local-learning-runtime`、版本 `0.4.0`；`host-status` 返回
+`READY`、PID、`state_home`。不要把 `UNKNOWN-0.0.0` 当作安装成功。
+
+**保留该虚拟环境**：安装器生成的客户端配置会引用其中的 Python。新终端执行
+`llr` 前重新 activate，或直接使用：
+
+```sh
+"$HOME/.local/share/llr/venv/bin/llr" doctor
+```
+
+客户端通过绝对路径启动桥接器，不要求你为每次聊天手动 activate。
+
+### 3. 登记该机器的项目
+
+下面的 OfficeMobile 仅是接入示例，不是引擎内置业务。必须把示例路径替换成新 Mac
+上的真实 checkout；workspace ID 是稳定业务标识，目录是本机位置。
+
+```sh
+PROJECT_ROOT="/替换为实际路径/officemobile/android/JavaKotlin"
+```
+
+同一 workspace 的重复 setup 必须使用相同根目录，不会静默重绑定。
+iOS 使用另一个 ID（例如 `officemobile/ios`）及 `--platform ios`；
+普通项目可使用 `--platform generic`。Android 经验不会自动授予 iOS 验证。
+
+### 4. 接入 VS Code Copilot
+
+```sh
+llr setup officemobile/android \
+  --root "$PROJECT_ROOT" --platform android \
+  --client copilot --approve
+```
+
+安装器写入用户级 hooks 和 MCP，不修改 Office 源码，保持已有模型配置。
+当前路径针对 Copilot Agent Host／Copilot CLI hook schema。其他 VS Code provider
+或旧版本必须单独检查兼容性，不能因同属 VS Code 就认为自动接通。
+
+重新加载 VS Code，检查目标 harness 的 Hooks／MCP 来源，再创建新 chat。
+配置存在只表示安装完成；实际触发还需要第 7 步验证。
+
+### 5. 接入 Codex
+
+先安装 MCP 和完成通知（保留已有通知链）：
+
+```sh
+llr setup officemobile/android \
+  --root "$PROJECT_ROOT" --platform android \
+  --client codex --approve
+```
+
+支持生命周期 hooks 的 Codex 桌面版本，再安装：
+
+```sh
+llr setup officemobile/android \
+  --root "$PROJECT_ROOT" --platform android \
+  --client codex-hooks --approve
+```
+
+在实际 Codex 桌面 App 的 **Settings → Hooks** 中 review/trust 新 hooks，
+重新启动客户端并创建新聊天。旧 Codex CLI 没有相同 hook 能力时只能使用 MCP／notify
+替代路径；不能把 CLI 测试当成桌面 App 的验收。
+
+可选的本地零推理请求门禁：
+
+```sh
+llr setup officemobile/android \
+  --root "$PROJECT_ROOT" --platform android \
+  --client codex-hooks --local-first-readonly --approve
+```
+
+这只会对精确匹配、P/R/Q 已验证的纯文件只读流程返回本地结果并阻止后续模型请求。
+新机器记忆库为空时没有可复用流程；不要期望安装本身就能解决所有问题。
+不支持该 hook 的客户端仍按其能力等级工作。
+
+默认客户端目录是 `~/.copilot` 或 `~/.codex`。如果实际客户端使用自定义目录，
+setup 可加 `--profile "/实际客户端配置目录"`；它不是 agent 的私人数据目录。
+多个客户端必须指向同一个 agent `--home`，才能共享同一份记忆。
+`--home` 是全局参数，放在子命令前（例如 `llr --home "/私人状态目录" host-status`）。
+
+### 6. 打开父目录时登记发现别名
+
+如果 App 打开 `officemobile` 父目录，而登记的是 `android/JavaKotlin`：
+
+```sh
+llr register-alias --workspace officemobile/android \
+  --root "/替换为实际路径/officemobile" --require-platform --approve
+```
+
+别名只用于发现，不改变源码锚点根目录。多平台父目录需要任务明确平台，否则返回
+`AMBIGUOUS`；未登记目录返回 `UNKNOWN_WORKSPACE`。初次验收建议直接打开登记的根目录。
+
+### 7. 验证真实接入
+
+```sh
+llr doctor
+llr context --cwd "$PROJECT_ROOT" --query "Android" --session install-check --level 0
+```
+
+然后在 VS Code／Codex 中创建全新 chat，提出普通项目问题，再运行 `llr doctor`
+检查 `recent_handoffs`：
+
+- 实际 session 是否留下交接记录；
+- workspace、客户端和时间是否正确；
+- hook 是否被信任并触发；
+- 有知识时是否引用正确 revision、条件和证据。
+
+**空库不是失败**；没有实际交接凭据则不能声称客户端自动接通。真正的运行验证还需要
+登记对应预授权 validator；setup 不授权登录、消息发送、购买、隐私设置变更或任意命令。
+
+### 8. 私人数据、更新与迁移
+
+默认私人状态目录：`~/.local-learning-runtime`。不在 Git checkout 内。
+代码、虚拟环境和知识数据是三个不同位置；不要把数据库、HTML、日志或截图推送仓库。
+安装不会启动夜间模型学习，也不会迁移旧机器的知识。
+
+更新时先等待活动操作结束，在源码 checkout 拉取最新代码并重新安装：
+
+```sh
+llr host-stop
+cd "$HOME/Developer/local-learning-runtime"
+git pull --ff-only
+python -m pip install --upgrade .
+llr host-status
+```
+
+上述命令需在第 2 步虚拟环境中执行。如果服务已因空闲退出，`host-stop` 可报告未运行；
+不要因此启动或终止其他无关进程。更新后重新启动客户端；hook 定义变化需再次 trust。
+实际安装不修改既有模型账号／提供方配置。
+
+本版没有自动跨 Mac 同步／一键安全迁移。**不要直接复制运行中的 SQLite 数据库**。
+旧知识包含目录、可执行文件授权、证据条件和私人完整性密钥；迁移需要一致备份、
+路径重映射、重新授权及复验。私人 HTML 可作为历史参考，但不能据此把新机器标成已验证。
+新 Mac 可先独立使用和积累；正式迁移应走单独审阅的流程。
+
 ## v0.4 目标与交付边界
 
 | 目标 | 本版实现 | 不能混淆的边界 |
@@ -40,21 +213,9 @@ flowchart TD
 
 ### 安装与载体
 
-Python 3.9+，无运行时第三方依赖。从 checkout 安装：
-
-```sh
-python3 -m pip install .
-llr setup sample/android --root /absolute/project --platform android \
-  --client copilot --approve
-llr setup sample/android --root /absolute/project --platform android \
-  --client codex --approve
-llr setup sample/android --root /absolute/project --platform android \
-  --client codex-hooks --approve
-```
-
-macOS 自带的旧 pip/setuptools 可能忽略 PEP 621 元数据。源安装建议用私人虚拟环境，
-在其中更新构建工具后安装；不要为本项目修改共享系统 Python。已构建 wheel 的安装
-不需要重建源码。打包验收必须检查 wheel 名称/版本与模块，`UNKNOWN-0.0.0` 不算成功。
+Python 3.9+，无运行时第三方依赖。完整步骤见上方
+[另一台 Mac 安装教程](#另一台-mac-安装教程)。
+已构建 wheel 不需要重建源码；源码安装需要兼容的构建工具。
 
 也可使用现有 `tools/llr.py`，或发行包自带 `local_learning_runtime/entry.py`。
 不用给新客户端手写仓库脚本路径。安装需要一次授权；Codex hooks 必须在实际客户端
