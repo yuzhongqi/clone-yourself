@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .core import Store, RuntimeErrorBase, canonical, digest, require, require_private_location
+from . import __version__
 
 MAX_FRAME = 256_000
 
@@ -191,7 +192,7 @@ class AgentHandler(socketserver.StreamRequestHandler):
             server.last_used = time.monotonic()
             if request.get("method") == "health":
                 result = {"status": "READY", "pid": os.getpid(), "state_home": str(server.home),
-                          "version": "0.4.0", "mission_active": server.working.is_set(),
+                          "version": __version__, "mission_active": server.working.is_set(),
                           "worker_alive": server.worker.is_alive(),
                           "model_calls_by_health": 0}
             elif request.get("method") == "shutdown":

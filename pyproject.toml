@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-learning-runtime"
-version = "0.4.0"
+version = "0.4.1"
 description = "Headless personal experience agent: shared memory, verified solutions and bounded learning"
 requires-python = ">=3.9"
 dependencies = []

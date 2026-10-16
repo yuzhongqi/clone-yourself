@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from .core import Store, RuntimeErrorBase, canonical, digest, identifier, now, object_fields, require
 from .discovery import discover, infer_platform
 from .learning import tokenize
+from .lifecycle import assess, reference as memory_reference, record as record_usage
 
 
 def define_theme(store: Store, workspace: str, spec: Dict[str, Any], approve: bool) -> Dict[str, Any]:
@@ -40,7 +41,9 @@ def knowledge_revision(store: Store) -> str:
     cases = [list(row) for row in store.db.execute(
         "SELECT workspace,solution,version,parameters_sha FROM solution_cases "
         "ORDER BY workspace,solution,version,parameters_sha")]
-    return digest(canonical([store.revision(), solutions, themes, legacy, milestones, preferences, cases]).encode())
+    policies = [list(row) for row in store.db.execute(
+        "SELECT * FROM memory_policies ORDER BY workspace,kind,subject")]
+    return digest(canonical([store.revision(), solutions, themes, legacy, milestones, preferences, cases, policies]).encode())
 
 
 def build_view(store: Store) -> Dict[str, Any]:
@@ -186,8 +189,31 @@ def packet(store: Store, cwd: Path, query: str, session: str, level: int = 2,
                                             item["detail"]["spec"]["conditions"])
                     except (RuntimeErrorBase, OSError, ValueError) as exc:
                         card["reuse"], card["reason"] = "BLOCKED", str(exc)
+                if item["kind"] in ("claim", "solution"):
+                    detail = item["detail"]
+                    subject = detail["spec"]["id"]
+                    health = assess(store, workspace, item["kind"], subject)
+                    if detail["version"] != memory_reference(store, workspace, item["kind"], subject)["version"]:
+                        health["status"] = "BLOCKED"
+                        health["reasons"] = ["Pinned knowledge version is no longer current"]
+                    card["memory"] = {"status": health["status"],
+                                      "last_verified_at": health["last_verified_at"],
+                                      "revalidate_by": health["revalidate_by"],
+                                      "review_due": health["review_due"], "reasons": health["reasons"]}
+                    if health["status"] not in ("FRESH", "CONDITIONS_UNKNOWN"):
+                        card["reuse"] = "BLOCKED"
                 ranked.append((score, node_id, card))
-        ranked.sort(key=lambda item: (-item[0], item[1]))
+        def priority(item):
+            node_detail = workspace_nodes[item[1]]["detail"]
+            kind = workspace_nodes[item[1]]["kind"]
+            if kind in ("claim", "solution"):
+                from .lifecycle import usage
+                successes = usage(store, workspace, kind, node_detail["spec"]["id"],
+                                  node_detail["version"])["counts"]["verified_success"]
+            else:
+                successes = 0
+            return -item[0], -min(3, successes), item[1]
+        ranked.sort(key=priority)
         candidates = [item[2] for item in ranked]
     else:
         require(node in workspace_nodes, "Unknown or wrong-workspace detail node")
@@ -202,6 +228,13 @@ def packet(store: Store, cwd: Path, query: str, session: str, level: int = 2,
             parts = [{"section": name, "value": value} for name, value in detail.items()]
         candidates = [{"id": node, "title": item["title"], "status": item["status"],
                        "conditions": item["conditions"], "detail": part} for part in parts]
+        if item["kind"] in ("claim", "solution"):
+            health = assess(store, workspace, item["kind"], detail["spec"]["id"])
+            if detail["version"] != memory_reference(store, workspace, item["kind"], detail["spec"]["id"])["version"]:
+                health["status"], health["reasons"] = "BLOCKED", ["Pinned version is no longer current"]
+            for candidate in candidates:
+                candidate["memory"] = {"status": health["status"], "last_verified_at": health["last_verified_at"],
+                                       "revalidate_by": health["revalidate_by"], "reasons": health["reasons"]}
     result = {"schema": "llr.context.v1", "workspace": workspace,
               "execution_pid": os.getpid(),
               "revision": view["revision"], "current_revision": knowledge_revision(store),
@@ -223,6 +256,13 @@ def packet(store: Store, cwd: Path, query: str, session: str, level: int = 2,
         for item in result["items"]:
             store.db.execute("INSERT OR IGNORE INTO context_reads VALUES (?,?,?,?)",
                              (session, workspace, view["revision"], item["id"]))
+            source_node = workspace_nodes.get(item["id"])
+            if source_node and source_node["kind"] in ("claim", "solution"):
+                detail = source_node["detail"]
+                record_usage(store, workspace, source_node["kind"], detail["spec"]["id"],
+                             detail["version"], "expanded" if level == 3 else "retrieved", session,
+                             "context:" + digest(canonical([view["revision"], level, item["id"],
+                                                           item.get("detail", {}).get("section")]).encode()))
     require(len(canonical(result).encode()) <= budget, "Context envelope exceeds declared budget")
     return result
 
@@ -244,6 +284,11 @@ def refresh_context(store: Store, session: str) -> Dict[str, Any]:
             row["workspace"] + ":" + row["node"])
         if old_node != new_node:
             changed.add(row["node"])
+        if new_node and new_node.get("kind") in ("claim", "solution"):
+            health = assess(store, row["workspace"], new_node["kind"],
+                            new_node["detail"]["spec"]["id"])
+            if health["status"] not in ("FRESH", "CONDITIONS_UNKNOWN"):
+                invalidated.append({"id": row["node"], "reason": "Memory " + health["status"]})
         if new_node and new_node.get("kind") == "solution":
             from .solutions import get_solution, check_preconditions
             try:

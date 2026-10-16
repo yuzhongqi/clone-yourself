@@ -11,6 +11,7 @@ from .core import (Store, RuntimeErrorBase, canonical, digest, file_digest, iden
 from .discovery import discover
 from .learning import load_policy, privacy_key, run_registered
 from .privacy import sanitize
+from .lifecycle import assess, require_fresh, record as record_usage
 
 
 def all_steps(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -322,9 +323,13 @@ def check_preconditions(store: Store, record: Dict[str, Any], parameters: Dict[s
             detail = "Pinned solution dependency"
             if verdict == "PASS":
                 dependency = get_solution(store, record["workspace"], condition["id"])
-                if dependency["spec"]["parameters"]:
+                try:
+                    require_fresh(store, record["workspace"], "solution", condition["id"], actual=actual)
+                except RuntimeErrorBase as exc:
+                    verdict, detail = "FAIL", str(exc)
+                if verdict == "PASS" and dependency["spec"]["parameters"]:
                     verdict, detail = "UNKNOWN", "Dependency requires its own parameter binding"
-                else:
+                elif verdict == "PASS":
                     dependent_checks = check_preconditions(store, dependency, {}, actual, visiting)
                     verdict = ("FAIL" if any(c["verdict"] == "FAIL" for c in dependent_checks)
                                else "UNKNOWN" if any(c["verdict"] == "UNKNOWN" for c in dependent_checks)
@@ -382,14 +387,23 @@ def route(store: Store, cwd: Path, query: str, session: str,
     if missing:
         return {"status": "NEEDS_INPUT", "missing": missing, "model_calls": 0}
     checks = check_preconditions(store, record, values, actual or {})
+    case_key = digest(canonical(values).encode())
+    freshness = assess(store, record["workspace"], "solution", record["id"], case_key, actual)
     case = store.db.execute("SELECT 1 FROM solution_cases WHERE workspace=? AND solution=? AND "
                             "version=? AND parameters_sha=?", (record["workspace"], record["id"],
                             record["version"], digest(canonical(values).encode()))).fetchone()
     state = ("BLOCKED" if record["lifecycle"] not in ("verified", "candidate")
              or any(check["verdict"] == "FAIL" for check in checks)
+             or (record["lifecycle"] == "verified" and case
+                 and freshness["status"] not in ("FRESH", "CONDITIONS_UNKNOWN"))
              else "NEEDS_INPUT" if any(check["verdict"] == "UNKNOWN" for check in checks)
+             or (case and freshness["status"] == "CONDITIONS_UNKNOWN")
              else "LOCAL_READY" if record["lifecycle"] == "verified" and case else "NEEDS_EXPLORATION")
+    record_usage(store, record["workspace"], "solution", record["id"], record["version"],
+                 "selected" if state == "LOCAL_READY" else "rejected", session,
+                 "route:" + digest(canonical([query, values, actual]).encode()), case_key, state)
     return {"status": state, "workspace": record["workspace"], "solution": record["id"],
+            "freshness": freshness,
             "version": record["version"], "parameters": values, "checks": checks,
             "goal": record["spec"]["problem"]["goal"], "boundaries": record["spec"]["boundaries"],
             "model_calls": 0}
@@ -406,6 +420,12 @@ def execute_solution(store: Store, workspace: str, solution: str, session: str,
     require(record["lifecycle"] == "verified" or (verify_candidate and approve
             and record["lifecycle"] == "candidate"), "Solution not verified/approved for trial")
     require(not parameters_match(spec, parameters), "Missing parameters")
+    run_id = digest(canonical([workspace, solution, record["version"], session, invocation]).encode())
+    input_sha = digest(canonical([parameters, actual]).encode())
+    previous_run = store.db.execute("SELECT state,input_sha FROM solution_runs WHERE id=?", (run_id,)).fetchone()
+    if previous_run:
+        require(previous_run["input_sha"] == input_sha, "Invocation replay changed inputs")
+        require(previous_run["state"] != "RUNNING", "Interrupted/running solution; review before repeating")
     if not verify_candidate:
         require(store.db.execute("SELECT 1 FROM solution_cases WHERE workspace=? AND solution=? "
                                 "AND version=? AND parameters_sha=?", (workspace, solution,
@@ -414,11 +434,19 @@ def execute_solution(store: Store, workspace: str, solution: str, session: str,
     else:
         require(approve, "Explicit approval required to validate a new parameter combination")
     checks = check_preconditions(store, record, parameters, actual)
+    case_key = digest(canonical(parameters).encode())
+    if not verify_candidate:
+        health = assess(store, workspace, "solution", solution, case_key, actual)
+        if health["status"] != "FRESH":
+            record_usage(store, workspace, "solution", solution, record["version"], "rejected",
+                         session, invocation, case_key, "Memory " + health["status"])
+            return {"status": "NEEDS_INPUT" if health["status"] == "CONDITIONS_UNKNOWN" else "BLOCKED",
+                    "freshness": health, "model_calls": 0}
     if any(check["verdict"] != "PASS" for check in checks):
+        record_usage(store, workspace, "solution", solution, record["version"], "rejected",
+                     session, invocation, case_key, "Preconditions changed or unknown")
         return {"status": "NEEDS_INPUT" if any(c["verdict"] == "UNKNOWN" for c in checks) else "BLOCKED",
                 "checks": checks, "model_calls": 0}
-    run_id = digest(canonical([workspace, solution, record["version"], session, invocation]).encode())
-    input_sha = digest(canonical([parameters, actual]).encode())
     with store.transaction():
         old = store.db.execute("SELECT * FROM solution_runs WHERE id=?", (run_id,)).fetchone()
         if old:
@@ -428,6 +456,8 @@ def execute_solution(store: Store, workspace: str, solution: str, session: str,
         store.db.execute("INSERT INTO solution_runs VALUES (?,?,?,?,?,?,?,?,?)",
                          (run_id, workspace, solution, record["version"], session, input_sha,
                           "RUNNING", "{}", now()))
+        record_usage(store, workspace, "solution", solution, record["version"], "executed",
+                     session, run_id, case_key)
     outputs, verdict, error = {}, "PASS", None
     started = time.monotonic()
     try:
@@ -509,6 +539,9 @@ def execute_solution(store: Store, workspace: str, solution: str, session: str,
             store.db.execute("INSERT OR IGNORE INTO solution_cases VALUES (?,?,?,?,?)",
                              (workspace, solution, record["version"],
                               digest(canonical(parameters).encode()), run_id))
+        record_usage(store, workspace, "solution", solution, record["version"],
+                     "verified_success" if verdict == "PASS" else "failure",
+                     session, run_id, case_key, error or "")
     return report
 
 

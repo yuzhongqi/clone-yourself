@@ -26,6 +26,7 @@ from .solutions import propose_solution, execute_solution, route, invalidate_sol
 from .context import packet, define_theme, refresh_context
 from .missions import create_mission, mission_status, control, tick
 from .preferences import save_preference
+from .lifecycle import configure as configure_memory, assess as memory_health, maintenance
 
 
 def read_json(path: str) -> Any:
@@ -40,6 +41,21 @@ def parser() -> argparse.ArgumentParser:
                         default=Path(os.environ.get("LLR_HOME", "~/.local-learning-runtime")).expanduser())
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("init")
+    memory_policy = commands.add_parser("memory-policy")
+    memory_policy.add_argument("spec")
+    memory_policy.add_argument("--workspace", required=True)
+    memory_policy.add_argument("--kind", choices=["claim", "solution"], required=True)
+    memory_policy.add_argument("--id", required=True)
+    memory_policy.add_argument("--approve", action="store_true")
+    memory = commands.add_parser("memory-health")
+    memory.add_argument("--workspace", required=True)
+    memory.add_argument("--kind", choices=["claim", "solution"], required=True)
+    memory.add_argument("--id", required=True)
+    memory.add_argument("--case-key")
+    maintenance_parser = commands.add_parser("maintenance")
+    maintenance_parser.add_argument("--workspace", required=True)
+    maintenance_parser.add_argument("--limit", type=int, default=50)
+    maintenance_parser.add_argument("--cursor", type=int, default=0)
     setup = commands.add_parser("setup")
     setup.add_argument("workspace")
     setup.add_argument("--root", type=Path, required=True)
@@ -249,6 +265,12 @@ def parser() -> argparse.ArgumentParser:
 def dispatch(store: Store, args: argparse.Namespace) -> Any:
     if args.command == "init":
         return {"status": "ok", "home": str(store.home), "model_calls": 0}
+    if args.command == "memory-policy":
+        return configure_memory(store, args.workspace, args.kind, args.id, read_json(args.spec), args.approve)
+    if args.command == "memory-health":
+        return memory_health(store, args.workspace, args.kind, args.id, args.case_key)
+    if args.command == "maintenance":
+        return maintenance(store, args.workspace, args.limit, args.cursor)
     if args.command == "setup":
         return setup_client(store, args.workspace, args.root, args.platform, args.client,
                             args.profile, args.approve, args.local_first_readonly)

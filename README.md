@@ -27,6 +27,7 @@ again.
 | **Bounded learning missions** | Explicitly approve source-inspection and revalidation queues with checkpoints, deadlines, permissions and budgets. Model work requires a separately verified cost gateway. |
 | **Private, inspectable knowledge** | Generate readable local HTML and matching JSON, inspect provenance, detect conflicts and drift, and delete workspace knowledge. |
 | **Preferences without hidden permission grants** | Keep confirmed preferences and unconfirmed habit hypotheses separate from verified facts and action authorization. |
+| **Freshness and observed use** | Enforce evidence-age and dynamic-condition policies, count retrieval separately from verified execution, and explain maintenance priorities without launching experiments. |
 
 ## How it works
 
@@ -63,6 +64,8 @@ the whole project works or that every future version is compatible.
 
 ## Start here
 
+- [Freshness, usage and maintenance](#freshness-usage-and-maintenance)
+
 - [Install on another Mac](#另一台-mac-安装教程)
 - [Architecture and delivered capabilities](#v04-目标与交付边界)
 - [Complete solution memos](#完整解决-memo)
@@ -72,6 +75,85 @@ the whole project works or that every future version is compatible.
 **Runtime compatibility:** the package remains `local-learning-runtime`,
 the CLI remains `llr`, and private data remains in `~/.local-learning-runtime`.
 The repository rename does not require moving existing checkouts or memories.
+
+## Freshness, usage and maintenance
+
+Verified knowledge is conditional and time-bounded, not permanent truth.
+Default **maximum evidence ages** are 30 days for source-only solutions,
+7 days for runtime observations/solutions, and 1 day for explicitly classified
+remote-service knowledge. Review thresholds are 15 days, 3 days and 12 hours,
+respectively. These are conservative scheduling defaults, not proof that a
+service remains stable until its deadline. Existing source/condition/dependency
+checks still apply, and actual current conditions must be attested.
+These defaults also apply to existing knowledge on its next read/execution.
+They do not rewrite historical evidence or start a revalidation job automatically.
+
+The runtime distinguishes **retrieved**, **expanded**, **selected**,
+**executed**, **verified_success**, **failure**, and **rejected**:
+
+- Retrieval/injection is not proof of model understanding, adoption or success.
+- Selection records a deterministic route decision, not inferred user intent.
+- Only a real passing registered execution renews its verification time.
+  Reading old evidence, replaying an invocation, importing a note, or
+  republishing unchanged data does not renew it.
+- Events are idempotent per version, session, observed operation and parameter
+  case. A success for one case cannot renew another case or an older version.
+- Missing/future verification dates, expired evidence, newer failures and
+  missing current dynamic conditions block direct reuse or require input.
+  Approved revalidation is explicit, never automatically triggered by a read.
+- Bounded successful-reuse counts only break equal-relevance retrieval ties.
+  Popularity never overrides applicability, changes truth, or expands scope.
+- Long inactivity produces an archive suggestion, not deletion or refutation.
+
+Override an individual claim/solution policy using a private JSON file:
+
+```json
+{
+  "knowledge_type": "remote",
+  "max_age_seconds": 86400,
+  "review_after_seconds": 43200,
+  "archive_after_seconds": 7776000,
+  "required_dynamic": ["remote_config_revision"]
+}
+```
+
+Required dynamic names must already be bound in that knowledge's condition
+contract. The program refuses to invent a new applicable scope through a policy
+change. Add/revalidate the actual condition contract first if it is missing.
+
+```sh
+llr memory-policy /private/policy.json --workspace sample/android \
+  --kind solution --id solution-id --approve
+llr memory-health --workspace sample/android --kind solution --id solution-id
+llr maintenance --workspace sample/android
+```
+
+`memory-health` reports the current version's evidence date, revalidation
+deadline, observed counts, execution success rate and explanatory reasons.
+Use `--case-key` (the canonical parameter SHA-256) for a solution's exact case.
+Overview dates conservatively cover the oldest case; per-case checks determine
+execution eligibility. Historical records are preserved when evidence expires.
+
+`maintenance` generates a deterministic **recommendation queue**: condition/
+evidence drift, failures, expiry, frequently selected/executed but aging memos,
+then lower-priority review/archive suggestions. It never starts App operations,
+model requests, automatic deletion or a paused learning mission. The read-only
+MCP equivalent is `local_learning_maintenance`.
+Queue results are paged (default 50, maximum 200); use `--limit` and `--cursor`
+with the returned `next_cursor`. Omission counts never mean all knowledge was reviewed.
+
+The local HTML/JSON portal shows evidence dates, next review, actual outcomes,
+and maintenance reasons from the same data. Export a new snapshot to see changes:
+
+```sh
+llr export-portal --workspace sample/android --output /private/knowledge-view/new-snapshot
+```
+
+These checks are wired into claim recall/search, progressive context,
+solution route/execute, dependency checks and context refresh. A pinned old view
+remains inspectable but cannot pretend to be the currently applicable version.
+This is not a background watcher of every external dependency: unregistered
+conditions and remote changes still require explicit collectors and verification.
 
 ## 另一台 Mac 安装教程
 
@@ -107,7 +189,7 @@ python -m pip show local-learning-runtime
 llr host-status
 ```
 
-当前版本应显示 `local-learning-runtime`、版本 `0.4.0`；`host-status` 返回
+当前版本应显示 `local-learning-runtime`、版本 `0.4.1`；`host-status` 返回
 `READY`、PID、`state_home`。不要把 `UNKNOWN-0.0.0` 当作安装成功。
 
 **保留该虚拟环境**：安装器生成的客户端配置会引用其中的 Python。新终端执行

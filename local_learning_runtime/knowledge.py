@@ -56,6 +56,7 @@ def import_graph(store: Store, workspace: str, source: Path, node_ids: List[str]
 
 
 def catalog(store: Store, workspace: str) -> Dict[str, Any]:
+    from .lifecycle import assess, maintenance
     store.workspace(workspace)
     with store.transaction():
         revision = store.revision()
@@ -74,6 +75,7 @@ def catalog(store: Store, workspace: str) -> Dict[str, Any]:
                     "status": "PASS",
                     "notice": "Checks pass under recorded conditions; current environment not attested."}
             claims.append(card)
+            card["memory"] = assess(store, workspace, "claim", claim["spec"]["id"])
         legacy = []
         for row in store.db.execute("SELECT id,body FROM legacy_intake WHERE workspace=? ORDER BY id",
                                    (workspace,)):
@@ -90,6 +92,8 @@ def catalog(store: Store, workspace: str) -> Dict[str, Any]:
         questions = [item for item in store.questions() if item["task"]["workspace"] == workspace]
         solutions = [dict(row, body=json.loads(row["body"])) for row in store.db.execute(
             "SELECT * FROM solutions WHERE workspace=?", (workspace,))]
+        for solution in solutions:
+            solution["memory"] = assess(store, workspace, "solution", solution["id"])
         learning_missions = [dict(row, body=json.loads(row["body"])) for row in store.db.execute(
             "SELECT * FROM missions WHERE workspace=?", (workspace,))]
         from .learning import status, graph
@@ -105,7 +109,8 @@ def catalog(store: Store, workspace: str) -> Dict[str, Any]:
     return {"schema": "llr.catalog.v1", "workspace": workspace, "revision": revision,
             "claims": sorted(claims, key=lambda item: item["spec"]["id"]),
             "legacy": legacy, "candidates": candidates, "questions": questions,
-            "tasks": tasks, "graph": projection, "solutions": solutions, "missions": learning_missions}
+            "tasks": tasks, "graph": projection, "solutions": solutions, "missions": learning_missions,
+            "maintenance": maintenance(store, workspace)}
 
 
 def escaped(value: Any) -> str:
@@ -160,10 +165,46 @@ def published_card(claim: Dict[str, Any], evidence_labels: Dict[str, str]) -> st
             + '</p><div class="callout"><strong>怎么使用？</strong><p>' + escaped(reason)
             + '</p></div><p class="muted">未证明：账户身份、全部业务流程、具体源码调用链。'
             + '</p><h4>验证依据</h4><p class="links">' + " · ".join(links)
-            + '</p><details><summary>适用条件与复验提示</summary>'
+            + '</p>' + memory_summary(claim.get("memory", {}))
+            + '<details><summary>适用条件与复验提示</summary>'
             + condition_list(spec["conditions"])
             + '<p>构建或条件变化后，用相同操作与断言重新验证；agent 使用前调用 recall。</p>'
             + "</details>" + technical_details(claim) + "</article>")
+
+
+def memory_summary(health: Dict[str, Any]) -> str:
+    if not health:
+        return ""
+    labels = {"FRESH": "证据仍在有效期内", "EXPIRED": "证据已过期，需要复验",
+              "UNKNOWN": "验证时间未知", "BLOCKED": "已暂停复用",
+              "REVIEW_REQUIRED": "最近执行失败，需要审查", "CONDITIONS_UNKNOWN": "当前动态条件未核验"}
+    stats = health["usage"]
+    counts = stats["counts"]
+    return ('<div class="callout"><strong>时效与实际使用</strong><p>'
+            + escaped(labels.get(health["status"], health["status"])) + "</p>"
+            + "<p>最近有效验证：" + escaped(health["last_verified_at"] or "未知")
+            + "；最晚复验：" + escaped(health["revalidate_by"] or "待确定") + "</p>"
+            + "<p>最近执行：" + escaped(stats["last_executed_at"] or "尚无记录")
+            + "；检索曝光 " + str(counts["retrieved"]) + " 次，实际执行 " + str(counts["executed"])
+            + " 次，验证成功 " + str(counts["verified_success"]) + " 次，失败 "
+            + str(counts["failure"]) + " 次。</p><p>被检索不等于采用，常用不等于正确；"
+            + "检索不会刷新验证日期。</p>"
+            + "".join("<p>" + escaped(human_reason(reason)) + "</p>" for reason in health["reasons"]) + "</div>")
+
+
+def human_reason(reason: str) -> str:
+    labels = {
+        "Maximum evidence age exceeded; retrieval does not renew verification": "验证证据已超过有效期；多次查看不会延长有效期。",
+        "Scheduled evidence review is due": "已到建议复验时间。",
+        "Frequently used knowledge has aging evidence": "这条经验经常被选用，但验证已较旧，应优先复验。",
+        "Long inactive; consider archiving, not deleting evidence": "长期未使用，可考虑归档；不会因此删除证据或认定结论错误。",
+        "Current source, dependency or runner condition changed": "源码、依赖或验证器条件发生变化。",
+        "A failed execution is newer than the last successful verification": "最近发生执行失败，需要审查，不能靠使用频率恢复可信度。",
+        "Verification time missing or in the future; revalidation required": "缺少有效验证时间，需要重新核验。",
+        "An execution is running or was interrupted; inspect outcome before reuse": "有执行仍在运行或曾被中断，请先确认结果。",
+        "Conflicting or superseding observation requires reconciliation": "出现冲突或替代证据，需要处理后再复用。",
+    }
+    return labels.get(reason, reason)
 
 
 def legacy_card(item: Dict[str, Any]) -> str:
@@ -261,15 +302,18 @@ def export_portal(store: Store, workspace: str, output: Path) -> Dict[str, Any]:
                                      "AND solution=? AND version=?",
                                      (workspace, solution["id"], solution["version"])).fetchone()[0]
         verified = solution["lifecycle"] == "verified"
+        usable = verified and solution["memory"]["status"] == "FRESH"
         steps = {"inspect_file": "核验工作区文件身份", "run_validator": "运行已批准验证器",
                  "select": "读取已有步骤的结构化结果", "branch": "按实际检查结果选择已验证分支"}
         operations = "".join("<li>" + escaped(steps.get(step["op"], step["op"])) + "</li>"
                              for step in spec["steps"])
         solution_cards.append('<article class="card"><span class="badge '
-            + ("pass" if verified else "warn") + '">' + ("完整经验已验证" if verified else "解决候选／待复验")
+            + ("pass" if usable else "warn") + '">'
+            + ("完整经验已验证" if usable else "完整经验已验证 · 当前需复验" if verified else "解决候选／待复验")
             + "</span><h3>" + escaped(spec["problem"]["goal"]) + "</h3>"
             + "<p>版本 " + str(solution["version"]) + "；已验证参数组合 " + str(case_count)
             + " 个。声明参数范围不等于全部已经验证。</p>"
+            + memory_summary(solution.get("memory", {}))
             + '<div class="callout">新任务先检查前置条件；匹配后执行固定流程，不让模型重写步骤。</div>'
             + "<h4>解决路径</h4><ol>" + operations + "</ol><h4>未证明的范围</h4><ul>"
             + "".join("<li>" + escaped(item) + "</li>" for item in spec["boundaries"]) + "</ul>"
@@ -280,6 +324,12 @@ def export_portal(store: Store, workspace: str, output: Path) -> Dict[str, Any]:
     sections.insert(0, '<section id="solutions"><h2>可复用解决流程</h2>'
                     + ("".join(solution_cards) or "<p>尚无完整解决 memo；验证观察不会自动升级为解决流程。</p>")
                     + "</section>")
+    sections.append('<section id="maintenance"><h2>知识维护建议</h2><p>'
+        + "这里只列建议，不会自动运行 App、调用模型、删除知识或恢复学习。</p>"
+        + ("".join('<article class="card"><h3>' + escaped(item["title"]) + "</h3><ul>"
+                  + "".join("<li>" + escaped(human_reason(reason)) + "</li>" for reason in item["reasons"])
+                  + "</ul></article>" for item in data["maintenance"]["items"])
+           or "<p>当前没有待处理建议；每次实际复用仍需核验条件。</p>") + "</section>")
     if data["missions"]:
         sections.append('<section id="missions"><h2>主动学习任务</h2>'
             + "".join('<article class="card"><h3>' + escaped(item["body"]["goal"]) + "</h3><p>队列状态："

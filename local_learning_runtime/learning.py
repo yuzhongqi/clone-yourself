@@ -249,6 +249,12 @@ def ingest(store: Store, event: Dict[str, Any], trusted: bool = False,
         for relation in safe.get("relations", []):
             store.db.execute("INSERT OR IGNORE INTO knowledge_relations VALUES (?,?,?)",
                              (event_id, relation["relation"], relation["target"]))
+        if state == "PUBLISHED":
+            from .lifecycle import record
+            claim_version = store.snapshot()[claim_id]["version"]
+            record(store, event["workspace"], "claim", claim_id, claim_version,
+                   "verified_success", event["session"], "milestone:" + event_id,
+                   occurred_at=spec["provenance"]["validated_at"])
     result = status(store, run_id)
     result["event_id"] = event_id
     if state == "SAVE_FAILED":
@@ -338,6 +344,7 @@ def search(store: Store, cwd: Path, query: str, session: str,
     workspace = found["workspace"]
     terms = tokenize(query)
     candidates = []
+    from .lifecycle import assess as assess_memory, record as record_usage
     snapshot = store.snapshot()
     for claim_id, claim in snapshot.items():
         if claim["spec"]["workspace"] != workspace:
@@ -363,6 +370,8 @@ def search(store: Store, cwd: Path, query: str, session: str,
         if conflict:
             reuse, reason = "BLOCKED", "Related conflicting/superseding candidate needs reconciliation."
         candidates.append((score, {"id": claim_id, "kind": "published", "summary": spec["statement"],
+                                   "memory": assess_memory(store, workspace, "claim", claim_id, actual=actual),
+                                   "version": claim["version"],
                                    "title": spec.get("provenance", {}).get("title", spec["task_type"]),
                                    "conditions": spec["conditions"],
                                    "provenance": {key: spec.get("provenance", {}).get(key)
@@ -378,7 +387,9 @@ def search(store: Store, cwd: Path, query: str, session: str,
                                        "summary": canonical(body["observation"])[:1500],
                                        "reuse": row["state"], "reason": row["reason"],
                                        "conditions": body["conditions"]}))
-    candidates.sort(key=lambda item: (-item[0], item[1]["kind"] != "published", item[1]["id"]))
+    candidates.sort(key=lambda item: (-item[0], item[1]["kind"] != "published",
+                    -min(3, item[1].get("memory", {}).get("usage", {}).get("counts", {}).get("verified_success", 0)),
+                    item[1]["id"]))
     selected = []
     result = {"schema": "llr.search.v1", "workspace": workspace, "state_home": str(store.home),
               "revision": store.revision(), "matches": selected, "omitted": 0,
@@ -398,6 +409,10 @@ def search(store: Store, cwd: Path, query: str, session: str,
         store.db.execute("INSERT OR IGNORE INTO client_receipts VALUES (?,?,?,?,?,?,?)",
                          (digest(canonical([session, receipt]).encode()), "retrieval", session,
                           "search", workspace, canonical(receipt), now()))
+        for item in selected:
+            if item["kind"] == "published":
+                record_usage(store, workspace, "claim", item["id"], item["version"],
+                             "retrieved", session, "search:" + digest(canonical(receipt).encode()))
     return result
 
 
@@ -611,6 +626,8 @@ def forget_workspace(store: Store, workspace: str, approve: bool) -> Dict[str, A
         store.db.execute("DELETE FROM solutions WHERE workspace=?", (workspace,))
         store.db.execute("DELETE FROM themes WHERE workspace=?", (workspace,))
         store.db.execute("DELETE FROM preferences WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM memory_events WHERE workspace=?", (workspace,))
+        store.db.execute("DELETE FROM memory_policies WHERE workspace=?", (workspace,))
         store.db.execute("DELETE FROM mission_model_calls WHERE mission IN "
                          "(SELECT id FROM missions WHERE workspace=?)", (workspace,))
         store.db.execute("DELETE FROM mission_items WHERE mission IN "

@@ -241,6 +241,17 @@ class Store:
             CREATE TABLE IF NOT EXISTS preferences (
                 id TEXT PRIMARY KEY, workspace TEXT, version INTEGER NOT NULL,
                 kind TEXT NOT NULL, state TEXT NOT NULL, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS memory_policies (
+                workspace TEXT NOT NULL REFERENCES workspaces(id), kind TEXT NOT NULL,
+                subject TEXT NOT NULL, body TEXT NOT NULL, updated_at TEXT NOT NULL,
+                PRIMARY KEY(workspace,kind,subject));
+            CREATE TABLE IF NOT EXISTS memory_events (
+                id TEXT PRIMARY KEY, workspace TEXT NOT NULL REFERENCES workspaces(id),
+                kind TEXT NOT NULL, subject TEXT NOT NULL, version INTEGER NOT NULL,
+                case_key TEXT NOT NULL, event TEXT NOT NULL, session TEXT NOT NULL,
+                source TEXT NOT NULL, reason TEXT NOT NULL, occurred_at TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS memory_events_subject ON memory_events
+                (workspace,kind,subject,version,case_key,occurred_at);
         """)
 
     def close(self) -> None:
@@ -404,6 +415,10 @@ class Store:
         require(claim_id not in visiting, "Dependency cycle")
         visiting.add(claim_id)
         try:
+            stored = self.db.execute("SELECT version FROM claims WHERE id=?", (claim_id,)).fetchone()
+            if stored and stored["version"] == claim["version"]:
+                from .lifecycle import require_fresh
+                require_fresh(self, claim["spec"]["workspace"], "claim", claim_id, actual=actual)
             require(claim.get("lifecycle") == "active",
                     "Claim is " + claim.get("lifecycle", "unknown"))
             require(match_conditions(claim["spec"]["conditions"], actual),
@@ -501,6 +516,9 @@ class Store:
                     stale.append({"id": claim_id, "reason": str(exc)})
                 else:
                     matches.append(claim)
+                    from .lifecycle import record
+                    record(self, task["workspace"], "claim", claim_id, claim["version"],
+                           "retrieved", session, "recall:" + str(revision))
             status = "BLOCKED" if stale else "LOCAL_READY" if matches else "NEEDS_INVESTIGATION"
             if status == "NEEDS_INVESTIGATION":
                 question_id = digest(canonical(task).encode())

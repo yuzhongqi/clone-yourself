@@ -10,8 +10,17 @@ from .learning import search, status, run_registered
 from .discovery import discover
 from .context import packet
 from .solutions import route, execute_solution
+from .lifecycle import maintenance
+from . import __version__
 
 TOOLS = [
+    {"name": "local_learning_maintenance",
+     "description": "Explain aging evidence, observed usage and maintenance priorities. "
+                    "Read-only recommendations; never runs App tests, deletes data or starts learning.",
+     "inputSchema": {"type": "object", "properties": {"workspace": {"type": "string"},
+                     "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                     "cursor": {"type": "integer", "minimum": 0}},
+                     "required": ["workspace"], "additionalProperties": False}},
     {"name": "local_experience_context",
      "description": "Progressive shared memory: L0 project catalog, L1 theme map, L2 task summaries "
                     "and L3 pinned detail. Bounded bytes and explicit omissions; no whole-memory injection.",
@@ -74,7 +83,7 @@ def respond(store: Store, message: Dict[str, Any]) -> Dict[str, Any]:
     if method == "initialize":
         return {"protocolVersion": message.get("params", {}).get("protocolVersion", "2024-11-05"),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "local-learning-runtime", "version": "0.4.0"}}
+                "serverInfo": {"name": "local-learning-runtime", "version": __version__}}
     if method == "ping":
         return {}
     if method == "tools/list":
@@ -85,6 +94,8 @@ def respond(store: Store, message: Dict[str, Any]) -> Dict[str, Any]:
         if params["name"] == "local_learning_search":
             result = search(store, Path(args["cwd"]), args["query"], args["session"],
                             args.get("conditions"))
+        elif params["name"] == "local_learning_maintenance":
+            result = maintenance(store, args["workspace"], args.get("limit", 50), args.get("cursor", 0))
         elif params["name"] == "local_experience_context":
             result = packet(store, Path(args["cwd"]), args["query"], args["session"],
                             args.get("level", 2), args.get("node"), args.get("revision"),
